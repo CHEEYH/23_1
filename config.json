@@ -1,0 +1,11 @@
+{
+  "mes_api": {
+    "url": "https://xlentmesapi.ir-four.com/api",
+    "timeout": 5
+  },
+  "tcp": {
+    "server": "127.0.0.1",
+    "port": 8888
+  },
+  "current_recipe": "C1.1"
+}
