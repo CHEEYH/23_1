@@ -21,7 +21,7 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # 设置应用样式
+    # 设置应用样式l
     app.setStyle("Fusion")
     app.setStyleSheet("""
         QMainWindow {

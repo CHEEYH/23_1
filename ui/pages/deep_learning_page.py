@@ -142,6 +142,7 @@ class DeepLearningPage(QWidget):
     def __init__(self, parent=None):
         super().__init__()
         self.capture_folder = None
+        self.capture_mode = "positive"  # default selected folder
         self.main_window = parent
         self.setWindowTitle("Deep Learning")
         self.resize(1600, 1000)
@@ -212,34 +213,38 @@ class DeepLearningPage(QWidget):
         self.init_ui()
 
     def update_paths_from_recipe(self):
-        """Update all paths based on the current recipe"""
-        # Use the imported singleton directly - NOT creating a new instance
+        """Update all paths based on the current recipe and selected capture mode"""
         if config_manager.current_recipe:
             recipe_folder = config_manager.get_current_recipe_folder()
 
-            # Set capture folder based on recipe
-            self.capture_folder = os.path.join(recipe_folder, "yolo_dataset")
+            # Base dataset folder
+            dataset_root = os.path.join(recipe_folder, "yolo_dataset")
 
-            # Set cropped save folder based on recipe
+            # Capture folder now depends on selected mode
+            self.capture_folder = os.path.join(dataset_root, self.capture_mode)
+
+            # Cropped save folder remains the same
             self.labeling_path = os.path.join(recipe_folder, "Annotation")
 
             # Create folders if they don't exist
-            for folder in [self.capture_folder, self.labeling_path]:
+            for folder in [dataset_root, self.capture_folder, self.labeling_path]:
                 if folder:
                     os.makedirs(folder, exist_ok=True)
 
             print(f"Recipe: {config_manager.current_recipe}")
+            print(f"Capture mode: {self.capture_mode}")
+            print(f"Capture folder: {self.capture_folder}")
 
             # Update UI display
             if hasattr(self, 'recipe_label'):
-                self.recipe_label.setText(f"Recipe: {config_manager.current_recipe}")
+                self.recipe_label.setText(
+                    f"Recipe: {config_manager.current_recipe} | Mode: {self.capture_mode.capitalize()}"
+                )
         else:
-            # When no recipe, set to None
             self.capture_folder = None
             self.labeling_path = None
             print("No recipe selected - waiting for user to select a recipe")
 
-            # Update UI display
             if hasattr(self, 'recipe_label'):
                 self.recipe_label.setText("Recipe: None (Please select a recipe first)")
 
@@ -574,8 +579,34 @@ class DeepLearningPage(QWidget):
 
         img_layout.addWidget(self.open_folder_btn)
         img_layout.addWidget(self.capture_btn)
+        # Capture mode buttons
+        mode_layout = QHBoxLayout()
+        mode_layout.setSpacing(6)
+
+        self.positive_btn = QPushButton("Positive")
+        self.positive_btn.setCheckable(True)
+        self.positive_btn.clicked.connect(lambda: self.set_capture_mode("positive"))
+        self.positive_btn.setFixedHeight(30)
+
+        self.negative_btn = QPushButton("Negative")
+        self.negative_btn.setCheckable(True)
+        self.negative_btn.clicked.connect(lambda: self.set_capture_mode("negative"))
+        self.negative_btn.setFixedHeight(30)
+
+        self.empty_btn = QPushButton("Empty")
+        self.empty_btn.setCheckable(True)
+        self.empty_btn.clicked.connect(lambda: self.set_capture_mode("empty"))
+        self.empty_btn.setFixedHeight(30)
+
+        mode_layout.addWidget(self.positive_btn)
+        mode_layout.addWidget(self.negative_btn)
+        mode_layout.addWidget(self.empty_btn)
+        img_layout.addLayout(mode_layout)
         img_group.setLayout(img_layout)
+
         right_layout.addWidget(img_group)
+
+        self.update_mode_buttons()
 
         # ========== AI Functions ==========
         ai_group = QGroupBox("🤖 AI Tools")
@@ -830,7 +861,9 @@ class DeepLearningPage(QWidget):
 
             # Update folder info in status
             if self.capture_folder:
-                self.status_label.setText(f"📸 Capture folder: {os.path.basename(self.capture_folder)}")
+                self.status_label.setText(
+                    f"📸 Capture folder: {os.path.basename(self.capture_folder)} ({self.capture_mode})"
+                )
 
             # Auto-load model if available and not loaded
             if not hasattr(self, 'current_model') or self.current_model is None:
@@ -2025,6 +2058,65 @@ class DeepLearningPage(QWidget):
 
         thread = threading.Thread(target=self.camera_worker.capture_image, daemon=True)
         thread.start()
+
+    def set_capture_mode(self, mode):
+        """Switch between positive / negative / empty capture folders"""
+        self.capture_mode = mode
+        self.update_paths_from_recipe()
+        self.update_mode_buttons()
+
+        # Clear currently loaded image list when switching folder
+        self.image_files = []
+        self.current_index = -1
+        self.viewer.boxes.clear()
+        self.viewer.update()
+
+        if hasattr(self, 'image_info'):
+            self.image_info.setText(f"No image loaded ({mode})")
+
+        self.show_notification(f"Switched to {mode} folder", "info")
+
+    def update_mode_buttons(self):
+        """Update button checked states and colors"""
+        buttons = {
+            "positive": self.positive_btn,
+            "negative": self.negative_btn,
+            "empty": self.empty_btn
+        }
+
+        for mode, btn in buttons.items():
+            is_active = (self.capture_mode == mode)
+            btn.setChecked(is_active)
+
+            if is_active:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2ecc71;
+                        color: white;
+                        border: 2px solid #1e8449;
+                        border-radius: 4px;
+                        padding: 6px 12px;
+                        font-weight: bold;
+                        font-size: 11px;
+                        min-height: 30px;
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #ecf0f1;
+                        color: #2c3e50;
+                        border: 1px solid #bdc3c7;
+                        border-radius: 4px;
+                        padding: 6px 12px;
+                        font-weight: bold;
+                        font-size: 11px;
+                        min-height: 30px;
+                    }
+                    QPushButton:hover {
+                        background-color: #dfe6e9;
+                    }
+                """)
 
     def auto_load_latest_model(self):
         """Automatically find and load the latest model for current recipe"""

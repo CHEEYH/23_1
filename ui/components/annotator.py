@@ -469,10 +469,15 @@ class AnnotationWidget(QWidget):
                 print(f"  {class_id}: {label}")
 
     def auto_split_and_generate_yaml(self, source_folder, labeling_path):
-        """Auto split dataset and generate data.yaml for YOLO training"""
+        """
+        Split dataset by COPYING files from:
+            source_folder/positive
+            source_folder/negative
+            source_folder/empty
+
+        Originals remain untouched.
+        """
         try:
-            # 1. FIRST SPLIT THE DATASET
-            # Create directory structure
             images_train_dir = os.path.join(source_folder, "images", "train")
             images_val_dir = os.path.join(source_folder, "images", "val")
             labels_train_dir = os.path.join(source_folder, "labels", "train")
@@ -481,72 +486,102 @@ class AnnotationWidget(QWidget):
             for dir_path in [images_train_dir, images_val_dir, labels_train_dir, labels_val_dir]:
                 os.makedirs(dir_path, exist_ok=True)
 
-            # Get all images from source folder
-            image_files = []
-            for ext in ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff']:
-                image_files.extend([f for f in os.listdir(source_folder)
-                                    if f.lower().endswith(ext)])
+            # optional: clear old generated split only
+            for folder in [images_train_dir, images_val_dir, labels_train_dir, labels_val_dir]:
+                for f in os.listdir(folder):
+                    fp = os.path.join(folder, f)
+                    if os.path.isfile(fp):
+                        os.remove(fp)
 
-            if not image_files:
-                print("No image files found for training")
+            category_folders = ["positive", "negative", "empty"]
+            valid_exts = ('.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff')
+
+            total_train = 0
+            total_val = 0
+
+            for category in category_folders:
+                category_path = os.path.join(source_folder, category)
+
+                if not os.path.exists(category_path):
+                    print(f"⚠️ Folder not found: {category_path}")
+                    continue
+
+                image_files = [
+                    f for f in os.listdir(category_path)
+                    if f.lower().endswith(valid_exts)
+                ]
+
+                if not image_files:
+                    print(f"⚠️ No images found in: {category_path}")
+                    continue
+
+                random.shuffle(image_files)
+
+                if len(image_files) == 1:
+                    split_idx = 1
+                else:
+                    split_idx = max(1, int(len(image_files) * 0.8))
+                    if split_idx >= len(image_files):
+                        split_idx = len(image_files) - 1
+
+                train_images = image_files[:split_idx]
+                val_images = image_files[split_idx:]
+
+                print(f"\n{category}: total={len(image_files)}, train={len(train_images)}, val={len(val_images)}")
+
+                # COPY train
+                for img_file in train_images:
+                    src_img = os.path.join(category_path, img_file)
+                    dst_img_name = f"{category}_{img_file}"
+                    dst_img = os.path.join(images_train_dir, dst_img_name)
+                    shutil.copy2(src_img, dst_img)
+
+                    label_file = os.path.splitext(img_file)[0] + ".txt"
+                    src_label = os.path.join(category_path, label_file)
+                    dst_label_name = f"{category}_{label_file}"
+                    dst_label = os.path.join(labels_train_dir, dst_label_name)
+
+                    if os.path.exists(src_label):
+                        shutil.copy2(src_label, dst_label)
+                    else:
+                        with open(dst_label, "w", encoding="utf-8") as f:
+                            pass
+
+                # COPY val
+                for img_file in val_images:
+                    src_img = os.path.join(category_path, img_file)
+                    dst_img_name = f"{category}_{img_file}"
+                    dst_img = os.path.join(images_val_dir, dst_img_name)
+                    shutil.copy2(src_img, dst_img)
+
+                    label_file = os.path.splitext(img_file)[0] + ".txt"
+                    src_label = os.path.join(category_path, label_file)
+                    dst_label_name = f"{category}_{label_file}"
+                    dst_label = os.path.join(labels_val_dir, dst_label_name)
+
+                    if os.path.exists(src_label):
+                        shutil.copy2(src_label, dst_label)
+                    else:
+                        with open(dst_label, "w", encoding="utf-8") as f:
+                            pass
+
+                total_train += len(train_images)
+                total_val += len(val_images)
+
+            if total_train == 0 and total_val == 0:
+                print("❌ No images found in positive/negative/empty")
                 return False
 
-            # Get all label files from source folder
-            label_files = [f for f in os.listdir(source_folder)
-                           if f.lower().endswith('.txt')]
-
-            # Shuffle and split (80% train, 20% val)
-            random.shuffle(image_files)
-            split_idx = int(len(image_files) * 0.8)
-            train_images = image_files[:split_idx]
-            val_images = image_files[split_idx:]
-
-            print(f"Total images: {len(image_files)}")
-            print(f"Train images: {len(train_images)}")
-            print(f"Val images: {len(val_images)}")
-
-            # Copy images and labels to respective folders
-            for img_file in train_images:
-                # Copy image
-                src_img = os.path.join(source_folder, img_file)
-                dst_img = os.path.join(images_train_dir, img_file)
-                if os.path.exists(src_img):
-                    shutil.copy2(src_img, dst_img)
-
-                # Copy corresponding label file if exists
-                label_file = os.path.splitext(img_file)[0] + '.txt'
-                if label_file in label_files:
-                    src_label = os.path.join(source_folder, label_file)
-                    dst_label = os.path.join(labels_train_dir, label_file)
-                    if os.path.exists(src_label):
-                        shutil.copy2(src_label, dst_label)
-
-            for img_file in val_images:
-                # Copy image
-                src_img = os.path.join(source_folder, img_file)
-                dst_img = os.path.join(images_val_dir, img_file)
-                if os.path.exists(src_img):
-                    shutil.copy2(src_img, dst_img)
-
-                # Copy corresponding label file if exists
-                label_file = os.path.splitext(img_file)[0] + '.txt'
-                if label_file in label_files:
-                    src_label = os.path.join(source_folder, label_file)
-                    dst_label = os.path.join(labels_val_dir, label_file)
-                    if os.path.exists(src_label):
-                        shutil.copy2(src_label, dst_label)
-
-            # 2. NOW GENERATE DATA.YAML
             success = self.generate_data_yaml_after_split(source_folder, labeling_path)
 
             if not success:
-                print("Warning: Could not generate data.yaml with class names")
+                print("❌ Failed to generate data.yaml")
                 return False
 
-            print(f"✓ Dataset split and data.yaml created successfully!")
-            print(f"✓ {len(train_images)} images copied to images/train/")
-            print(f"✓ {len(val_images)} images copied to images/val/")
-            print(f"✓ Dataset structure ready for YOLOv11 training")
+            print(f"\n✅ Done")
+            print(f"Train images: {total_train}")
+            print(f"Val images: {total_val}")
+            print("Original files in positive/negative/empty remain unchanged.")
 
             return True
 
