@@ -1396,20 +1396,53 @@ class DeepLearningPage(QWidget):
                 temp_project = os.path.join(save_dir, "_temp_training")
                 os.makedirs(temp_project, exist_ok=True)
 
+                # In the run_training_with_monitoring method, update the model.train() call:
+
                 results = model.train(
                     data=yaml_path,
                     epochs=epochs,
                     batch=batch_size,
                     device=device,
-                    project=temp_project,  # Train to temp location
+                    project=save_dir,
                     name=run_name,
                     exist_ok=True,
-                    verbose=False,
+                    verbose=True,
                     save=True,
+                    save_period=min(10, epochs // 10),
                     plots=True,
-                    workers=4,
-                    patience=50,
-                    seed=42
+                    workers=0,
+                    patience=50,  # Early stopping patience
+                    seed=42,
+
+                    # --- ENHANCED PARAMETERS FOR BETTER SPECIFICITY ---
+                    hsv_h=0.0,  # Keep as 0.0 - no color augmentation
+                    hsv_s=0.0,  # Keep as 0.0 - no saturation changes
+                    hsv_v=0.1,  # REDUCED from 0.2 - less brightness variation
+                    degrees=0.0,  # Keep as 0.0 - no rotation
+                    translate=0.01,  # REDUCED from 0.05 - less translation
+                    scale=0.0,  # ADDED - minimal scaling (10%)
+                    shear=0.0,  # ADDED - no shearing
+                    perspective=0.0,  # ADDED - no perspective distortion
+                    flipud=0.0,  # Keep as 0.0
+                    fliplr=0.0,  # Keep as 0.0
+                    mosaic=0.0,  # ADDED - disable mosaic augmentation
+                    mixup=0.0,  # ADDED - disable mixup augmentation
+                    copy_paste=0.0,  # ADDED - disable copy-paste augmentation
+
+                    # Add these for better precision
+                    overlap_mask=False,  # For segmentation, but works with detection too
+                    mask_ratio=4,  # Not directly applicable but keep
+                    dropout=0.1,  # ADDED - helps prevent overfitting to wrong features
+
+                    # Increase confidence threshold during training (optional)
+                    # This makes the model more selective
+                    conf=0.3,  # Minimum confidence threshold
+
+                    # Use focal loss for harder examples
+                    fl_gamma=1.5,  # Focal loss gamma - focuses on hard examples
+
+                    # Class weights if you have class imbalance
+                    # class_weights={0: 1.0, 1: 1.5}  # Example
                 )
 
                 # AFTER TRAINING: Manually move files to desired location

@@ -207,9 +207,11 @@ class PipelineRunner:
 
         return world_corners
 
+    # In pipeline_runner.py, replace the send_coordinates_to_server method:
+
     @staticmethod
     def send_coordinates_to_server(predictions, calibration=None):
-        """Send coordinates to server using heartbeat manager"""
+        """Send ONLY the highest confidence object coordinates to server using heartbeat manager"""
         if not PipelineRunner._heartbeat_manager or not PipelineRunner._heartbeat_manager.is_connected():
             print("⚠️ Heartbeat manager not connected - attempting to reconnect...")
             PipelineRunner._ensure_heartbeat_connected()
@@ -218,78 +220,87 @@ class PipelineRunner:
                 return False
 
         try:
-            # Build coordinate string
-            coordinate_lines = []
-
-            # Debug calibration status
-            if calibration and calibration.is_calibrated:
-                print(f"📐 Using WORLD coordinates for {len(predictions)} objects")
-                print(f"   Calibration matrix: {calibration.calibration_matrix}")
-            else:
-                print(f"📷 Using PIXEL coordinates for {len(predictions)} objects")
-
-            for i, pred in enumerate(predictions):
-                bbox = pred.get('bbox', [0, 0, 0, 0])
-                if len(bbox) >= 4:
-                    x1, y1, x2, y2 = bbox[:4]
-
-                    # Convert based on calibration
-                    if calibration and calibration.is_calibrated:
-                        # Convert to world coordinates
-                        pixel_corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
-                        world_corners = PipelineRunner._convert_to_world_coordinates(
-                            calibration,
-                            pixel_corners
-                        )
-
-                        # Format with 2 decimal places
-                        coord_line = (f"{world_corners[0][0]:.2f}_{world_corners[0][1]:.2f},"
-                                      f"{world_corners[1][0]:.2f}_{world_corners[1][1]:.2f},"
-                                      f"{world_corners[2][0]:.2f}_{world_corners[2][1]:.2f},"
-                                      f"{world_corners[3][0]:.2f}_{world_corners[3][1]:.2f}")
-
-                        # Debug first object conversion
-                        if i == 0:
-                            print(f"   Sample conversion:")
-                            print(
-                                f"     Pixel: ({x1:.1f}, {y1:.1f}) -> World: ({world_corners[0][0]:.2f}, {world_corners[0][1]:.2f})")
-                            print(
-                                f"     Pixel: ({x2:.1f}, {y1:.1f}) -> World: ({world_corners[1][0]:.2f}, {world_corners[1][1]:.2f})")
-                            print(
-                                f"     Pixel: ({x2:.1f}, {y2:.1f}) -> World: ({world_corners[2][0]:.2f}, {world_corners[2][1]:.2f})")
-                            print(
-                                f"     Pixel: ({x1:.1f}, {y2:.1f}) -> World: ({world_corners[3][0]:.2f}, {world_corners[3][1]:.2f})")
-                    else:
-                        # Send pixel coordinates
-                        coord_line = (f"{x1:.2f}_{y1:.2f},"
-                                      f"{x2:.2f}_{y1:.2f},"
-                                      f"{x2:.2f}_{y2:.2f},"
-                                      f"{x1:.2f}_{y2:.2f}")
-
-                        # Debug first object
-                        if i == 0:
-                            print(
-                                f"   Pixel coordinates: ({x1:.1f}, {y1:.1f}), ({x2:.1f}, {y1:.1f}), ({x2:.1f}, {y2:.1f}), ({x1:.1f}, {y2:.1f})")
-
-                    coordinate_lines.append(coord_line)
-
-            if not coordinate_lines:
+            if not predictions:
+                print("⚠️ No predictions to send")
                 return False
 
-            # Send using heartbeat manager
-            message = "\n".join(coordinate_lines) + "\n"
+            # Find the prediction with highest confidence
+            # If confidence scores are tied, max() will return the first one encountered
+            best_prediction = max(predictions, key=lambda p: p.get('confidence', 0))
 
-            # Debug full message (first 200 chars only)
-            debug_msg = message[:200] + "..." if len(message) > 200 else message
-            print(f"📤 Sending coordinates:\n{debug_msg}")
+            print(f"\n{'=' * 50}")
+            print(f"🎯 Selected BEST object for transmission:")
+            print(f"   Class: {best_prediction.get('class_name', 'unknown')}")
+            print(f"   Class ID: {best_prediction.get('class_id', 'N/A')}")
+            print(f"   Confidence: {best_prediction.get('confidence', 0):.3f}")
+            print(f"{'=' * 50}")
 
-            success = PipelineRunner._heartbeat_manager.send_data(message)
+            # Build coordinate string for the best object only
+            bbox = best_prediction.get('bbox', [0, 0, 0, 0])
+            if len(bbox) >= 4:
+                x1, y1, x2, y2 = bbox[:4]
 
-            if success:
-                print(f"✅ Sent {len(coordinate_lines)} coordinate sets via heartbeat")
-                return True
+                # Debug calibration status
+                if calibration and calibration.is_calibrated:
+                    print(f"📐 Using WORLD coordinates for best object")
+                    print(f"   Calibration matrix: {calibration.calibration_matrix}")
+                else:
+                    print(f"📷 Using PIXEL coordinates for best object")
+
+                # Convert based on calibration
+                if calibration and calibration.is_calibrated:
+                    # Convert to world coordinates
+                    pixel_corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+                    world_corners = PipelineRunner._convert_to_world_coordinates(
+                        calibration,
+                        pixel_corners
+                    )
+
+                    # Format with 2 decimal places
+                    coord_line = (f"{world_corners[0][0]:.2f}_{world_corners[0][1]:.2f},"
+                                  f"{world_corners[1][0]:.2f}_{world_corners[1][1]:.2f},"
+                                  f"{world_corners[2][0]:.2f}_{world_corners[2][1]:.2f},"
+                                  f"{world_corners[3][0]:.2f}_{world_corners[3][1]:.2f}")
+
+                    # Debug conversion
+                    print(
+                        f"   Pixel: ({x1:.1f}, {y1:.1f}) -> World: ({world_corners[0][0]:.2f}, {world_corners[0][1]:.2f})")
+                    print(
+                        f"   Pixel: ({x2:.1f}, {y1:.1f}) -> World: ({world_corners[1][0]:.2f}, {world_corners[1][1]:.2f})")
+                    print(
+                        f"   Pixel: ({x2:.1f}, {y2:.1f}) -> World: ({world_corners[2][0]:.2f}, {world_corners[2][1]:.2f})")
+                    print(
+                        f"   Pixel: ({x1:.1f}, {y2:.1f}) -> World: ({world_corners[3][0]:.2f}, {world_corners[3][1]:.2f})")
+                else:
+                    # Send pixel coordinates
+                    coord_line = (f"{x1:.2f}_{y1:.2f},"
+                                  f"{x2:.2f}_{y1:.2f},"
+                                  f"{x2:.2f}_{y2:.2f},"
+                                  f"{x1:.2f}_{y2:.2f}")
+
+                    print(
+                        f"   Pixel coordinates: ({x1:.1f}, {y1:.1f}), ({x2:.1f}, {y1:.1f}), ({x2:.1f}, {y2:.1f}), ({x1:.1f}, {y2:.1f})")
+
+                # Send using heartbeat manager
+                message = coord_line + "\n"
+
+                # Debug full message
+                print(f"📤 Sending BEST object coordinates:\n{coord_line}")
+                print(f"   Confidence: {best_prediction.get('confidence', 0):.3f}")
+                print(f"   Class: {best_prediction.get('class_name', 'unknown')}")
+
+                success = PipelineRunner._heartbeat_manager.send_data(message)
+
+                if success:
+                    print(f"✅ Sent best object coordinates via heartbeat")
+                    print(f"{'=' * 50}\n")
+                    return True
+                else:
+                    print("❌ Failed to send coordinates")
+                    print(f"{'=' * 50}\n")
+                    return False
             else:
-                print("❌ Failed to send coordinates")
+                print("❌ Invalid bounding box format")
                 return False
 
         except Exception as e:
