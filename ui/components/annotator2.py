@@ -369,6 +369,7 @@ class AnnotationWidget(QWidget):
             self.handle_selection(img_pos)
 
         self.update()
+
     def get_obb_at_point(self, point: QPointF) -> int:
         """Return index of rotated box containing the point, or -1 if none"""
         for i, (cx, cy, width, height, angle, _) in enumerate(reversed(self.rotated_boxes)):

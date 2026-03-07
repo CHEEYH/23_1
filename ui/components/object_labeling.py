@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         self.resize(1400, 900)
 
         # Define base paths
-        self.base_path = "C:\\Users\\SiP-YHChee\\OneDrive - SIP Technology (M) Sdn Bhd\\Desktop"
+        self.base_path = "C:\\Users\\PC_AI_DS\\Desktop\\New folder"
         self.capture_image_path = f"{self.base_path}\\Capture Image"
         self.image_boxes = {}
 
@@ -770,16 +770,24 @@ class MainWindow(QMainWindow):
         def run_capture():
             def callback(success, message, image_path):
                 if success and image_path:
-                    base_name = os.path.basename(image_path)
-                    save_path = os.path.join(self.capture_folder, base_name)
+                    os.makedirs(self.capture_folder, exist_ok=True)
+                    print("capture_folder =", self.capture_folder)
+                    print("files before delete =", os.listdir(self.capture_folder))
 
-                    count = 1
-                    name, ext = os.path.splitext(base_name)
-                    while os.path.exists(save_path):
-                        save_path = os.path.join(self.capture_folder, f"{name}_{count}{ext}")
-                        count += 1
+                    # 删掉旧 bmp
+                    for file_name in os.listdir(self.capture_folder):
+                        file_path = os.path.join(self.capture_folder, file_name)
+                        if os.path.isfile(file_path) and file_name.lower().endswith(".bmp"):
+                            try:
+                                os.remove(file_path)
+                            except Exception as e:
+                                print(f"Failed to delete old image: {file_path}, error: {e}")
 
-                    os.rename(image_path, save_path)
+                    # 永远只存这一张
+                    save_path = os.path.join(self.capture_folder, "capture.bmp")
+
+                    import shutil
+                    shutil.move(image_path, save_path)
                     image_path = save_path
 
                 self.camera_signals.finished.emit(success, message, image_path)

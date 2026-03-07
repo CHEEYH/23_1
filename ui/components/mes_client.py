@@ -8,8 +8,7 @@ from typing import Dict, List, Optional, Any
 
 class MESClient:
     """Client for MES API to get pending parts with their UIDs"""
-
-    def __init__(self, base_url: str = "https://xlentmesapi.ir-four.com/api"):
+    def __init__(self, base_url: str = "http://127.0.0.1:5000/api"):
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         self.timeout = 5
@@ -22,6 +21,20 @@ class MESClient:
         # Cache for pending parts
         self.pending_parts = []
         self.last_fetch = None
+
+    # def __init__(self, base_url: str = "https://xlentmesapi.ir-four.com/api"):
+    #     self.base_url = base_url.rstrip('/')
+    #     self.session = requests.Session()
+    #     self.timeout = 5
+    #     self.session.headers.update({
+    #         'Content-Type': 'application/json',
+    #         'Accept': 'application/json'
+    #     })
+    #     print(f"🔧 MES Client initialized with URL: {self.base_url}")
+    #
+    #     # Cache for pending parts
+    #     self.pending_parts = []
+    #     self.last_fetch = None
 
     def _fetch_pending_parts(self) -> list:
         try:

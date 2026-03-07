@@ -1838,7 +1838,7 @@ class DeepLearningPage(QWidget):
 
             results = self.current_model.predict(
                 source=image_path,
-                conf=0.25,
+                conf=0.5,
                 iou=0.45,
                 device=device,
                 save=False,

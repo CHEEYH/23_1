@@ -317,7 +317,7 @@ class EditFlowPage(QWidget):
         # self.assembly_folder_btn.clicked.connect(self.open_selected_assembly_folder)
         # self.assembly_folder_btn.setEnabled(False)  # Initially disabled
 
-        button_layout.addWidget(self.run_btn)
+        # button_layout.addWidget(self.run_btn)
         button_layout.addWidget(clear_btn)
         button_layout.addWidget(self.delete_btn)
         #button_layout.addWidget(self.assembly_folder_btn)
@@ -532,12 +532,12 @@ class EditFlowPage(QWidget):
             self.recipe_label.setText(f"Selected: {config_manager.current_recipe}")
             self.save_btn.setEnabled(True)
             self.load_btn.setEnabled(True)
-            self.run_btn.setEnabled(len(self.pipeline_blocks) > 0)
+            # self.run_btn.setEnabled(len(self.pipeline_blocks) > 0)
         else:
             self.recipe_label.setText("No recipe selected")
             self.save_btn.setEnabled(False)
             self.load_btn.setEnabled(False)
-            self.run_btn.setEnabled(False)
+            # self.run_btn.setEnabled(False)
 
     def update_buttons_state(self):
         """Update button states"""
@@ -545,7 +545,7 @@ class EditFlowPage(QWidget):
         has_recipe = config_manager.current_recipe is not None
         has_selected = len(self.scene.selectedItems()) > 0
 
-        self.run_btn.setEnabled(has_blocks and has_recipe)
+        # self.run_btn.setEnabled(has_blocks and has_recipe)
         self.save_btn.setEnabled(has_recipe)
         self.load_btn.setEnabled(has_recipe)
         self.delete_btn.setEnabled(has_selected)

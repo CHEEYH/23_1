@@ -4,7 +4,7 @@ job_id=456
 recipe_name=123
 
 def stop_latest_workorder(job_id, recipe_name):
-    url = "https://xlentmesapi.ir-four.com/api/UpdateworkorderStatus/stop-latest"
+    url = "http://127.0.0.1:5000/api/UpdateworkorderStatus/stop-latest"
     payload = {"workOrder": str(job_id), "recipe": str(recipe_name)}
     headers = {"Content-Type": "application/json"}
 

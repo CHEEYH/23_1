@@ -921,7 +921,7 @@ class MainWindow(QMainWindow):
             self.pending_box_label = None
 
     def capture_from_camera(self):
-        """Capture from camera and save to block-specific capture folder"""
+        """Capture from camera and save to block-specific capture folder (only keep one image)"""
         calibration_file = "C://Users//PC_AI_DS//Pictures//LaserCalibration//calibration.json"
 
         if not os.path.exists(calibration_file):
@@ -958,22 +958,33 @@ class MainWindow(QMainWindow):
         def run_capture():
             def callback(success, message, image_path):
                 if success and image_path:
+                    os.makedirs(self.capture_folder, exist_ok=True)
+
+                    # 删除旧图，只保留最新一张
+                    for file_name in os.listdir(self.capture_folder):
+                        file_path = os.path.join(self.capture_folder, file_name)
+                        if os.path.isfile(file_path) and file_name.lower().endswith((".bmp", ".jpg", ".jpeg", ".png")):
+                            try:
+                                os.remove(file_path)
+                                print(f"Deleted old image: {file_path}")
+                            except Exception as e:
+                                print(f"Failed to delete old image {file_path}: {e}")
+
+                    # 保存新图
                     base_name = os.path.basename(image_path)
                     save_path = os.path.join(self.capture_folder, base_name)
 
-                    count = 1
-                    name, ext = os.path.splitext(base_name)
-                    while os.path.exists(save_path):
-                        save_path = os.path.join(self.capture_folder, f"{name}_{count}{ext}")
-                        count += 1
+                    try:
+                        os.replace(image_path, save_path)
+                    except Exception:
+                        import shutil
+                        shutil.move(image_path, save_path)
 
-                    os.rename(image_path, save_path)
                     image_path = save_path
 
-                    if image_path not in self.image_files:
-                        self.image_files.append(image_path)
-                        self.image_files.sort()
-                        self.current_index = self.image_files.index(image_path)
+                    # 只保留这一张
+                    self.image_files = [image_path]
+                    self.current_index = 0
 
                 self.camera_signals.finished.emit(success, message, image_path)
 

@@ -29,7 +29,7 @@ class APICreateRecipeThread(QThread):
 
             # Make the API request (just send, don't expect response)
             response = requests.post(
-                "https://xlentmesapi.ir-four.com/api/xlentrecipe/create",
+                "http://127.0.0.1:5000/api/xlentrecipe/create",
                 json=data,
                 timeout=5  # Shorter timeout since we don't need response
             )

@@ -1,6 +1,6 @@
 {
   "mes_api": {
-    "url": "https://xlentmesapi.ir-four.com/api",
+    "url": "http://127.0.0.1:5000/api",
     "timeout": 5
   },
   "tcp": {

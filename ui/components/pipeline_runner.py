@@ -1998,7 +1998,70 @@ class PipelineRunner:
         product_data = selection.get('product_data', {})
         product_name = product_data.get('name', f'Product {step_num}')
         product_id = selection.get('product_id', product_data.get('id', f'product_{step_num}'))
+
+        # ================== FIND REFERENCE IMAGE ==================
         reference_image_path = product_data.get('image_path')
+
+        print(f"DEBUG product_name = {product_name}")
+        print(f"DEBUG product_data = {product_data}")
+        print(f"DEBUG original reference_image_path = {reference_image_path}")
+
+        # Fallback 1: try Annotation folder in current recipe
+        if not reference_image_path or not os.path.exists(reference_image_path):
+            recipe_folder = config_manager.get_recipe_folder(config_manager.current_recipe)
+            if recipe_folder:
+                annotation_folder = os.path.join(recipe_folder, "Annotation")
+                print(f"DEBUG trying annotation folder: {annotation_folder}")
+
+                if os.path.exists(annotation_folder):
+                    import glob
+
+                    # exact name match first
+                    exact_bmp = os.path.join(annotation_folder, f"{product_name}.bmp")
+                    exact_png = os.path.join(annotation_folder, f"{product_name}.png")
+                    exact_jpg = os.path.join(annotation_folder, f"{product_name}.jpg")
+                    exact_jpeg = os.path.join(annotation_folder, f"{product_name}.jpeg")
+
+                    if os.path.exists(exact_bmp):
+                        reference_image_path = exact_bmp
+                    elif os.path.exists(exact_png):
+                        reference_image_path = exact_png
+                    elif os.path.exists(exact_jpg):
+                        reference_image_path = exact_jpg
+                    elif os.path.exists(exact_jpeg):
+                        reference_image_path = exact_jpeg
+                    else:
+                        # fuzzy match with full product name
+                        matches = []
+                        matches.extend(glob.glob(os.path.join(annotation_folder, f"*{product_name}*.bmp")))
+                        matches.extend(glob.glob(os.path.join(annotation_folder, f"*{product_name}*.png")))
+                        matches.extend(glob.glob(os.path.join(annotation_folder, f"*{product_name}*.jpg")))
+                        matches.extend(glob.glob(os.path.join(annotation_folder, f"*{product_name}*.jpeg")))
+
+                        # if product name like "3_PL8-02", also try suffix "PL8-02"
+                        if not matches and "_" in product_name:
+                            suffix = product_name.split("_", 1)[1].strip()
+                            print(f"DEBUG trying suffix match: {suffix}")
+                            matches.extend(glob.glob(os.path.join(annotation_folder, f"*{suffix}*.bmp")))
+                            matches.extend(glob.glob(os.path.join(annotation_folder, f"*{suffix}*.png")))
+                            matches.extend(glob.glob(os.path.join(annotation_folder, f"*{suffix}*.jpg")))
+                            matches.extend(glob.glob(os.path.join(annotation_folder, f"*{suffix}*.jpeg")))
+
+                        if matches:
+                            matches.sort(key=os.path.getmtime, reverse=True)
+                            reference_image_path = matches[0]
+
+        # Fallback 2: try from selection root if image_path stored as relative path
+        if reference_image_path and not os.path.isabs(reference_image_path):
+            recipe_folder = config_manager.get_recipe_folder(config_manager.current_recipe)
+            if recipe_folder:
+                candidate = os.path.join(recipe_folder, reference_image_path)
+                if os.path.exists(candidate):
+                    reference_image_path = candidate
+
+        print(f"DEBUG final reference_image_path = {reference_image_path}")
+        print(f"DEBUG path exists = {os.path.exists(reference_image_path) if reference_image_path else False}")
+        # ================== END FIND REFERENCE IMAGE ==================
 
         # Get saved configuration image path
         saved_config_image = None
@@ -2029,7 +2092,7 @@ class PipelineRunner:
 
         # Create save path for new capture
         recipe_folder = config_manager.get_recipe_folder(recipe_name)
-        capture_folder = os.path.join(recipe_folder, "Capture", f"Block_{block_id}")
+        capture_folder = os.path.join(recipe_folder, "Capture")
         os.makedirs(capture_folder, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2162,8 +2225,17 @@ class PipelineRunner:
             if not pixmap.isNull():
                 scaled_pixmap = pixmap.scaled(550, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 ref_image_label.setPixmap(scaled_pixmap)
+                print(f"✅ Loaded product image: {reference_image_path}")
+            else:
+                ref_image_label.setText(f"⚠️ Product image cannot be loaded\n{reference_image_path}")
+                print(f"❌ QPixmap failed to load: {reference_image_path}")
         else:
-            ref_image_label.setText("⚠️ Product image not found")
+            ref_image_label.setText(
+                f"⚠️ Product image not found\n\n"
+                f"Product: {product_name}\n"
+                f"Path: {reference_image_path}"
+            )
+            print(f"❌ Product image not found for: {product_name}")
 
         left_layout.addWidget(ref_image_label)
         left_layout.addStretch()
@@ -2692,7 +2764,7 @@ class PipelineRunner:
             verify_btn.setEnabled(True)
 
         def on_verify():
-            """Save results, show image, and send coordinates"""
+            """Save results, show image from Capture/Block_x folder, and send coordinates"""
             nonlocal captured_image_path, detection_results, output_path
 
             # Save the new capture results to selection
@@ -2705,6 +2777,8 @@ class PipelineRunner:
 
             # ===== SEND COORDINATES TO SERVER =====
             coordinates_sent = False
+            coord_string = ""
+
             try:
                 # Construct path to BoxesData folder
                 recipe_folder = config_manager.get_recipe_folder(recipe_name)
@@ -2727,11 +2801,9 @@ class PipelineRunner:
                         coord_parts = []
                         for point in box_data:
                             if len(point) >= 2:
-                                # Format with 2 decimal places
                                 coord_parts.append(f"{point[0]:.2f}_{point[1]:.2f}")
 
                         if coord_parts:
-                            # Join with commas
                             coord_string = ",".join(coord_parts)
 
                             # Send to server using heartbeat manager
@@ -2760,8 +2832,36 @@ class PipelineRunner:
             # Close the current dialog
             dialog.accept()
 
-            # ===== SHOW THE NEWLY CAPTURED IMAGE =====
-            image_to_show = captured_image_path  # Use the new image
+            # ===== SHOW IMAGE FROM recipe_folder/Capture/Block_x =====
+            image_to_show = None
+
+            try:
+                import glob
+
+                recipe_folder = config_manager.get_recipe_folder(recipe_name)
+                block_capture_folder = os.path.join(recipe_folder, "Capture", f"Block_{block_id}")
+
+                print(f"🔍 Looking for image in block capture folder: {block_capture_folder}")
+
+                bmp_files = glob.glob(os.path.join(block_capture_folder, "*.bmp"))
+                png_files = glob.glob(os.path.join(block_capture_folder, "*.png"))
+                jpg_files = glob.glob(os.path.join(block_capture_folder, "*.jpg"))
+                jpeg_files = glob.glob(os.path.join(block_capture_folder, "*.jpeg"))
+
+                all_files = bmp_files + png_files + jpg_files + jpeg_files
+
+                if all_files:
+                    # 只拿最新那张
+                    all_files.sort(key=os.path.getmtime, reverse=True)
+                    image_to_show = all_files[0]
+                    print(f"✅ Showing image from block folder: {image_to_show}")
+                else:
+                    print(f"⚠️ No image files found in {block_capture_folder}")
+
+            except Exception as e:
+                print(f"❌ Error finding image in block folder: {e}")
+                import traceback
+                traceback.print_exc()
 
             if image_to_show and os.path.exists(image_to_show):
                 saved_image_dialog = QDialog(parent_widget)
@@ -2833,9 +2933,9 @@ class PipelineRunner:
                 if not pixmap.isNull():
                     scaled = pixmap.scaled(700, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     saved_image_label.setPixmap(scaled)
-                    print(f"✅ Showing newly captured image: {image_to_show}")
+                    print(f"✅ Showing image: {image_to_show}")
                 else:
-                    saved_image_label.setText("❌ Cannot load captured image")
+                    saved_image_label.setText("❌ Cannot load image")
                     print(f"❌ Failed to load image: {image_to_show}")
 
                 saved_layout.addWidget(saved_image_label)
@@ -2878,7 +2978,12 @@ class PipelineRunner:
 
                 saved_image_dialog.exec()
             else:
-                error_msg = f"No captured image found for Step {step_num}.\n\nPath: {image_to_show}"
+                error_msg = (
+                    f"No image found in Step {step_num}.\n\n"
+                    f"Capture folder: {capture_folder}\n"
+                    f"Selected image: {image_to_show}"
+                )
+
                 if coordinates_sent:
                     error_msg += f"\n\n✅ Coordinates were sent:\n{coord_string}"
                 else:

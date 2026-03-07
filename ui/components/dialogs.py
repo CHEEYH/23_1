@@ -259,7 +259,7 @@ class AssemblyDialog(QDialog):
         toolbar_layout.setSpacing(10)
 
         # ===== ASSEMBLY TOOL BUTTON =====
-        self.assembly_tool_btn = QPushButton("🛠️ Assembly Tool")
+        self.assembly_tool_btn = QPushButton("🛠️ Assembly Location")
         self.assembly_tool_btn.setStyleSheet("""
             QPushButton {
                 font-size: 12px;
@@ -447,7 +447,45 @@ class AssemblyDialog(QDialog):
         left_column = QVBoxLayout()
 
         # Step 1: Select total number of steps
-        step_group = QGroupBox("Step 1: Set Number of Assembly Steps")
+        # step_group = QGroupBox("Step 1: Set Number of Assembly Steps")
+        # step_group.setStyleSheet("""
+        #     QGroupBox {
+        #         font-weight: bold;
+        #         font-size: 13px;
+        #         border: 2px solid #3498db;
+        #         border-radius: 8px;
+        #         padding-top: 15px;
+        #         margin-top: 5px;
+        #     }
+        #     QGroupBox::title {
+        #         subcontrol-origin: margin;
+        #         left: 10px;
+        #         padding: 0 10px 0 10px;
+        #         color: #2980b9;
+        #     }
+        # """)
+        # step_layout = QFormLayout(step_group)
+        #
+        # self.step_spinbox = QSpinBox()
+        # self.step_spinbox.setRange(1, 10)
+        # self.step_spinbox.setValue(1)
+        # self.step_spinbox.valueChanged.connect(self.on_step_count_changed)
+        # self.step_spinbox.setStyleSheet("""
+        #     QSpinBox {
+        #         font-size: 14px;
+        #         padding: 8px;
+        #         border: 2px solid #bdc3c7;
+        #         border-radius: 4px;
+        #         min-width: 80px;
+        #     }
+        #     QSpinBox:focus {
+        #         border-color: #3498db;
+        #     }
+        # """)
+        # step_layout.addRow("Total Assembly Steps:", self.step_spinbox)
+        # left_column.addWidget(step_group)
+
+        step_group = QGroupBox("Assembly Step")
         step_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -466,23 +504,18 @@ class AssemblyDialog(QDialog):
         """)
         step_layout = QFormLayout(step_group)
 
-        self.step_spinbox = QSpinBox()
-        self.step_spinbox.setRange(1, 10)
-        self.step_spinbox.setValue(1)
-        self.step_spinbox.valueChanged.connect(self.on_step_count_changed)
-        self.step_spinbox.setStyleSheet("""
-            QSpinBox {
+        fixed_step_label = QLabel("1")
+        fixed_step_label.setStyleSheet("""
+            QLabel {
                 font-size: 14px;
                 padding: 8px;
                 border: 2px solid #bdc3c7;
                 border-radius: 4px;
+                background-color: #f8f9fa;
                 min-width: 80px;
             }
-            QSpinBox:focus {
-                border-color: #3498db;
-            }
         """)
-        step_layout.addRow("Total Assembly Steps:", self.step_spinbox)
+        step_layout.addRow("Total Assembly Steps:", fixed_step_label)
         left_column.addWidget(step_group)
 
         # Steps container
@@ -509,7 +542,7 @@ class AssemblyDialog(QDialog):
         # Right column: Image gallery and prediction preview
         right_column = QVBoxLayout()
 
-        gallery_header = QLabel("📸 Annotation Images - Click to Select")
+        gallery_header = QLabel("📸 Product Images - Click to Select")
         gallery_header.setStyleSheet("""
             QLabel {
                 font-size: 15px;
@@ -750,59 +783,27 @@ class AssemblyDialog(QDialog):
 
     # ===== ASSEMBLY TOOL METHODS =====
     def open_assembly_tool(self):
-        """Open the Assembly Laser Annotation Tool and close this dialog"""
-        # ===== DISCONNECT TCP FIRST =====
+        """Open the Assembly Laser Annotation Tool and temporarily hide this dialog"""
         self.disconnect_tcp()
         self.update_tcp_messages("🔌 TCP disconnected for Assembly Tool")
 
         try:
-            # Try to import the assembly laser main window
-            try:
-                from ui.components.assembly_laser import MainWindow as AssemblyLaserMainWindow
-                print("✅ Successfully imported AssemblyLaserMainWindow")
-            except ImportError as e:
-                print(f"❌ Import error: {e}")
-                # Try alternative import paths
-                try:
-                    import sys
-                    import os
-                    # Add the current directory to path
-                    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                    from ui.components.assembly_laser import MainWindow as AssemblyLaserMainWindow
-                    print("✅ Successfully imported using alternative path")
-                except ImportError as e:
-                    QMessageBox.critical(
-                        self,
-                        "Import Error",
-                        f"Could not import Assembly Tool module.\n\n"
-                        f"Error: {str(e)}\n\n"
-                        f"Make sure assembly_laser.py is in the same directory."
-                    )
-                    return
+            from ui.components.assembly_laser import MainWindow as AssemblyLaserMainWindow
 
-            # Check if window already exists and is still open
             if self.assembly_tool_window and self.assembly_tool_window.isVisible():
-                print("🟡 Assembly Tool window already exists, raising it")
                 self.assembly_tool_window.raise_()
                 self.assembly_tool_window.activateWindow()
-                self.update_tcp_messages(f"🛠️ Assembly Tool already open")
 
-                # ===== CLOSE THIS DIALOG =====
-                print("🟡 Closing Assembly Configuration dialog")
-                self.reject()  # or self.accept() depending on your needs
+                # 先把自己隐藏，不然会挡住点击
+                self.hide()
                 return
-
-            print("🟢 Creating new Assembly Tool window")
 
             self.assembly_tool_window = AssemblyLaserMainWindow(
                 block_id=str(self.block_id),
                 block_name=str(self.block_name)
             )
 
-            print(f"DEBUG: Opening Assembly Tool with block_id={self.block_id}, block_name={self.block_name}")
-
             self.assembly_tool_window.setParent(None)
-
             self.assembly_tool_window.setWindowFlags(
                 Qt.Window |
                 Qt.WindowStaysOnTopHint |
@@ -811,14 +812,12 @@ class AssemblyDialog(QDialog):
                 Qt.WindowMinMaxButtonsHint |
                 Qt.WindowCloseButtonHint
             )
-
             self.assembly_tool_window.setWindowModality(Qt.NonModal)
             self.assembly_tool_window.setAttribute(Qt.WA_DeleteOnClose)
 
             if hasattr(self.assembly_tool_window, 'set_recipe_info'):
                 recipe_path = self.get_current_recipe_path()
                 self.assembly_tool_window.set_recipe_info(recipe_path, self.block_name)
-                print(f"✅ Passed recipe info: {recipe_path}, {self.block_name}")
 
             self.assembly_tool_window.destroyed.connect(self._on_assembly_tool_closed)
 
@@ -826,24 +825,13 @@ class AssemblyDialog(QDialog):
             self.assembly_tool_window.raise_()
             self.assembly_tool_window.activateWindow()
 
-            self.update_tcp_messages(f"🛠️ Opened Assembly Tool for {self.block_name}")
-            print("✅ open_assembly_tool completed successfully")
-
-            # ===== CLOSE THIS DIALOG =====
-            print("🟡 Closing Assembly Configuration dialog")
-
-            # Use QTimer to ensure the Assembly Tool window is fully shown first
-            QTimer.singleShot(100, self.close_dialog_safely)
+            # 重点：隐藏，不是关闭
+            self.hide()
 
         except Exception as e:
-            print(f"❌ Exception in open_assembly_tool: {e}")
             import traceback
             traceback.print_exc()
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to open Assembly Tool:\n\n{str(e)}"
-            )
+            QMessageBox.critical(self, "Error", f"Failed to open Assembly Tool:\n\n{str(e)}")
 
     def close_dialog_safely(self):
         """Safely close the dialog with a small delay to ensure Assembly Tool is shown"""
@@ -851,10 +839,14 @@ class AssemblyDialog(QDialog):
             print("🟡 Executing close_dialog_safely")
 
             # Option 1: Just reject/close the dialog
-            self.reject()
+            # self.reject()
 
-            # Option 2: If you want to save the current state before closing
-            # self.accept()  # This would save and close
+            if self.assembly_tool_window and self.assembly_tool_window.isVisible():
+                print("🟡 Assembly Tool window already exists, raising it")
+                self.assembly_tool_window.raise_()
+                self.assembly_tool_window.activateWindow()
+                self.update_tcp_messages("🛠️ Assembly Tool already open")
+                return
 
             print("✅ Dialog closed successfully")
         except Exception as e:
@@ -862,8 +854,13 @@ class AssemblyDialog(QDialog):
 
     def _on_assembly_tool_closed(self):
         """Handle assembly tool window closing"""
-        self.update_tcp_messages(f"✅ Assembly Tool closed")
+        self.update_tcp_messages("✅ Assembly Tool closed")
         self.assembly_tool_window = None
+
+        # 工具关掉后，把配置窗口显示回来
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _init_heartbeat_manager(self):
         """Initialize or reference the shared heartbeat manager"""
@@ -1193,18 +1190,29 @@ class AssemblyDialog(QDialog):
             QMessageBox.warning(self, "❌ TCP Test Failed", error_msg)
 
     # ===== EXISTING METHODS WITH TCP INTEGRATION =====
+    # def load_initial_configuration(self):
+    #     """Load initial configuration if editing existing assembly"""
+    #     try:
+    #         if 'total_steps' in self.initial_config:
+    #             # Set total steps
+    #             self.step_spinbox.setValue(self.initial_config['total_steps'])
+    #             self.total_steps = self.initial_config['total_steps']
+    #
+    #             # Load step selections - ACCESS THE 'selections' KEY
+    #             if 'selections' in self.initial_config:
+    #                 # Wait a bit for UI to update
+    #                 QTimer.singleShot(200, lambda: self.restore_step_selections(self.initial_config['selections']))
+    #
+    #     except Exception as e:
+    #         print(f"Error loading initial configuration: {e}")
+
     def load_initial_configuration(self):
         """Load initial configuration if editing existing assembly"""
         try:
-            if 'total_steps' in self.initial_config:
-                # Set total steps
-                self.step_spinbox.setValue(self.initial_config['total_steps'])
-                self.total_steps = self.initial_config['total_steps']
+            self.total_steps = 1
 
-                # Load step selections - ACCESS THE 'selections' KEY
-                if 'selections' in self.initial_config:
-                    # Wait a bit for UI to update
-                    QTimer.singleShot(200, lambda: self.restore_step_selections(self.initial_config['selections']))
+            if 'selections' in self.initial_config:
+                QTimer.singleShot(200, lambda: self.restore_step_selections(self.initial_config['selections']))
 
         except Exception as e:
             print(f"Error loading initial configuration: {e}")
@@ -1470,23 +1478,11 @@ class AssemblyDialog(QDialog):
         # layout.addWidget(capture_frame)
 
         # Step selection button
-        step_btn = QPushButton(f"Select Product for Step {step_number}")
-        step_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 11px;
-                padding: 6px;
-                background-color: #3498db;
-                color: white;
-                border-radius: 4px;
-                margin-top: 5px;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-        """)
-        step_btn.clicked.connect(lambda checked, step=step_number: self.set_active_step(step))
-        step_btn.setObjectName(f"step_{step_number}_btn")
-        layout.addWidget(step_btn)
+        # step_btn = QPushButton(f"Select Product for Step {step_number}")
+
+        # step_btn.clicked.connect(lambda checked, step=step_number: self.set_active_step(step))
+        # step_btn.setObjectName(f"step_{step_number}_btn")
+        # layout.addWidget(step_btn)
 
         # Store in layout
         step_frame.setProperty("step_number", step_number)
@@ -3621,56 +3617,56 @@ class AssemblyDialog(QDialog):
                     }
                 """)
 
-    def on_step_count_changed(self, value):
-        """Handle change in total steps"""
-        old_total = self.total_steps
-        self.total_steps = value
-
-        # Clear existing step widgets
-        while self.steps_layout.count():
-            child = self.steps_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-
-        self.step_widgets = {}
-
-        # Clear selections for removed steps
-        steps_to_remove = []
-        for step in self.step_selections:
-            if step > value:
-                steps_to_remove.append(step)
-
-        for step in steps_to_remove:
-            if step in self.selected_thumbnails:
-                del self.selected_thumbnails[step]
-            del self.step_selections[step]
-
-        # Create new step widgets
-        for step in range(1, value + 1):
-            self.create_step_widget(step)
-
-            # Restore existing selections if any
-            if step in self.step_selections:
-                product_id = self.step_selections[step]['product_id']
-                # Find the product
-                for product in self.available_products:
-                    if product['id'] == product_id:
-                        self.update_step_display(step, product)
-                        self.update_thumbnail_selection(product_id, step)
-
-                        # Enable capture button
-                        step_frame = self.step_widgets[step]['frame']
-                        capture_btn = step_frame.findChild(QPushButton, f"step_{step}_capture_btn")
-                        if capture_btn:
-                            capture_btn.setEnabled(True)
-                        break
-
-        # Adjust current active step if needed
-        if self.current_active_step > value:
-            self.current_active_step = value
-
-        self.update_step_indicator()
-        self.check_completion()
+    # def on_step_count_changed(self, value):
+    #     """Handle change in total steps"""
+    #     old_total = self.total_steps
+    #     self.total_steps = value
+    #
+    #     # Clear existing step widgets
+    #     while self.steps_layout.count():
+    #         child = self.steps_layout.takeAt(0)
+    #         if child.widget():
+    #             child.widget().deleteLater()
+    #
+    #     self.step_widgets = {}
+    #
+    #     # Clear selections for removed steps
+    #     steps_to_remove = []
+    #     for step in self.step_selections:
+    #         if step > value:
+    #             steps_to_remove.append(step)
+    #
+    #     for step in steps_to_remove:
+    #         if step in self.selected_thumbnails:
+    #             del self.selected_thumbnails[step]
+    #         del self.step_selections[step]
+    #
+    #     # Create new step widgets
+    #     for step in range(1, value + 1):
+    #         self.create_step_widget(step)
+    #
+    #         # Restore existing selections if any
+    #         if step in self.step_selections:
+    #             product_id = self.step_selections[step]['product_id']
+    #             # Find the product
+    #             for product in self.available_products:
+    #                 if product['id'] == product_id:
+    #                     self.update_step_display(step, product)
+    #                     self.update_thumbnail_selection(product_id, step)
+    #
+    #                     # Enable capture button
+    #                     step_frame = self.step_widgets[step]['frame']
+    #                     capture_btn = step_frame.findChild(QPushButton, f"step_{step}_capture_btn")
+    #                     if capture_btn:
+    #                         capture_btn.setEnabled(True)
+    #                     break
+    #
+    #     # Adjust current active step if needed
+    #     if self.current_active_step > value:
+    #         self.current_active_step = value
+    #
+    #     self.update_step_indicator()
+    #     self.check_completion()
 
     def check_completion(self):
         """Check if all steps have selections"""

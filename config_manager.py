@@ -58,7 +58,7 @@ class ConfigManager:
                 logger.warning(f"⚠️ Config file not found at {config_path}, using defaults")
                 self.config_data = {
                     'mes_api': {
-                        'url': 'https://xlentmesapi.ir-four.com/api',
+                        'url': 'http://127.0.0.1:5000/api',
                         'timeout': 5
                     },
                     'tcp': {
@@ -97,7 +97,7 @@ class ConfigManager:
 
     def get_mes_api_url(self) -> str:
         """Get MES API URL from config"""
-        return self.config_data.get('mes_api', {}).get('url', 'https://xlentmesapi.ir-four.com/api')
+        return self.config_data.get('mes_api', {}).get('url', 'http://127.0.0.1:5000/api')
 
     def get_mes_api_timeout(self) -> int:
         """Get MES API timeout from config"""
