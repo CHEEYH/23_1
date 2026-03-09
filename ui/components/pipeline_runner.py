@@ -310,6 +310,179 @@ class PipelineRunner:
             return False
 
     @staticmethod
+    def _send_latest_coordinates_from_folder(recipe_name: str, folder_name: str, block_id: str) -> tuple[bool, str]:
+        """
+        Read latest JSON coordinate file from:
+            recipes/<recipe_name>/<folder_name>/Block_<block_id>
+        and send it through heartbeat TCP.
+
+        Returns:
+            (success, coord_string)
+        """
+        try:
+            if not recipe_name:
+                print("⚠️ No recipe name provided for coordinate sending")
+                return False, ""
+
+            recipe_folder = config_manager.get_recipe_folder(recipe_name)
+            if not recipe_folder:
+                print(f"⚠️ Recipe folder not found for: {recipe_name}")
+                return False, ""
+
+            target_folder = os.path.join(recipe_folder, folder_name, f"Block_{block_id}")
+            print(f"🔍 Looking for coordinates in: {target_folder}")
+
+            if not os.path.exists(target_folder):
+                print(f"⚠️ Folder does not exist: {target_folder}")
+                return False, ""
+
+            import glob
+            json_files = glob.glob(os.path.join(target_folder, "*.json"))
+            if not json_files:
+                print(f"⚠️ No JSON files found in: {target_folder}")
+                return False, ""
+
+            latest_json = max(json_files, key=os.path.getmtime)
+            print(f"📂 Using latest coordinate file: {latest_json}")
+
+            with open(latest_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            coord_parts = []
+            if isinstance(data, list):
+                for point in data:
+                    if isinstance(point, (list, tuple)) and len(point) >= 2:
+                        coord_parts.append(f"{float(point[0]):.2f}_{float(point[1]):.2f}")
+                    elif isinstance(point, dict):
+                        x = point.get("x")
+                        y = point.get("y")
+                        if x is not None and y is not None:
+                            coord_parts.append(f"{float(x):.2f}_{float(y):.2f}")
+
+            coord_string = ",".join(coord_parts)
+            if not coord_string:
+                print(f"⚠️ No valid coordinates parsed from: {latest_json}")
+                return False, ""
+
+            # Ensure heartbeat connected
+            if not PipelineRunner._heartbeat_manager or not PipelineRunner._heartbeat_manager.is_connected():
+                print("⚠️ Heartbeat not connected, attempting reconnect...")
+                PipelineRunner._ensure_heartbeat_connected()
+
+            if not PipelineRunner._heartbeat_manager or not PipelineRunner._heartbeat_manager.is_connected():
+                print("❌ Heartbeat still not connected")
+                return False, coord_string
+
+            success = PipelineRunner._heartbeat_manager.send_data(coord_string + "\n")
+            if success:
+                print(f"✅ Sent coordinates from {folder_name}/Block_{block_id}: {coord_string}")
+                return True, coord_string
+            else:
+                print(f"❌ Failed to send coordinates from {folder_name}/Block_{block_id}")
+                return False, coord_string
+
+        except Exception as e:
+            print(f"❌ Error sending coordinates from {folder_name}/Block_{block_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, ""
+
+    @staticmethod
+    def _show_video_dialog(video_path: str, parent_widget=None, title: str = "Video") -> bool:
+        """Show fullscreen video dialog and wait until operator closes it."""
+        try:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+            from PySide6.QtMultimediaWidgets import QVideoWidget
+
+            dialog = QDialog(parent_widget)
+            dialog.setWindowTitle(title)
+            dialog.showFullScreen()
+
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(20, 20, 20, 20)
+            layout.setSpacing(15)
+
+            header = QLabel("🎬 Screw Operation Video")
+            header.setStyleSheet("""
+                QLabel {
+                    font-size: 20px;
+                    font-weight: bold;
+                    color: white;
+                    background-color: #3498db;
+                    padding: 15px;
+                    border-radius: 8px;
+                }
+            """)
+            header.setAlignment(Qt.AlignCenter)
+            layout.addWidget(header)
+
+            if not os.path.exists(video_path):
+                error_label = QLabel(f"❌ Video not found:\n{video_path}")
+                error_label.setAlignment(Qt.AlignCenter)
+                error_label.setStyleSheet("""
+                    QLabel {
+                        font-size: 16px;
+                        color: #e74c3c;
+                        background-color: #ffebee;
+                        padding: 20px;
+                        border-radius: 8px;
+                    }
+                """)
+                layout.addWidget(error_label)
+
+                close_btn = QPushButton("Close")
+                close_btn.clicked.connect(dialog.accept)
+                layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+                return dialog.exec() == QDialog.Accepted
+
+            video_widget = QVideoWidget()
+            video_widget.setStyleSheet("background-color: black; border-radius: 8px;")
+            layout.addWidget(video_widget, stretch=1)
+
+            close_btn = QPushButton("✅ Close Video & Continue")
+            close_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 16px;
+                    padding: 12px 24px;
+                    background-color: #2ecc71;
+                    color: white;
+                    border-radius: 8px;
+                    font-weight: bold;
+                    min-width: 220px;
+                }
+                QPushButton:hover {
+                    background-color: #27ae60;
+                }
+            """)
+            layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+
+            player = QMediaPlayer(dialog)
+            audio = QAudioOutput(dialog)
+            player.setAudioOutput(audio)
+            player.setVideoOutput(video_widget)
+            player.setSource(QUrl.fromLocalFile(video_path))
+            audio.setVolume(1.0)
+            player.play()
+
+            def close_video():
+                player.stop()
+                dialog.accept()
+
+            close_btn.clicked.connect(close_video)
+            dialog.finished.connect(lambda _: player.stop())
+
+            return dialog.exec() == QDialog.Accepted
+
+        except Exception as e:
+            print(f"❌ Error showing video dialog: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.warning(parent_widget, "Video Error", f"Cannot play video:\n{str(e)}")
+            return False
+
+    @staticmethod
     def continue_skipped_steps(recipe_name: str, job_data: Dict, parent_widget,
                                pending_callback=None) -> bool:
         """
@@ -581,6 +754,8 @@ class PipelineRunner:
                     f"📡 TCP: {tcp_status}\n"
                     f"📐 Calibration: {cal_status}"
                 )
+
+                PipelineRunner._notify_main_page_refresh_mes(parent_widget)
             else:
                 skipped_count = len(updated_job.get('skipped_steps', []))
                 waiting_count = len(updated_job.get('waiting_steps', []))
@@ -621,33 +796,6 @@ class PipelineRunner:
             # ===== CLEAN UP HEARTBEAT MANAGER =====
             PipelineRunner.cleanup()
             print("🔌 Pipeline heartbeat manager cleaned up after continuation")
-
-
-    # In pipeline_runner.py, replace the cleanup method with this:
-
-    @staticmethod
-    def cleanup(force_disconnect=True):
-        """
-        Clean up the heartbeat manager when pipeline execution ends.
-        This should be called when pipeline completes, especially after End block.
-
-        Args:
-            force_disconnect: If True, always disconnect regardless of reference count
-        """
-        if PipelineRunner._heartbeat_manager is not None:
-            PipelineRunner._heartbeat_reference_count -= 1
-            print(f"🔌 Heartbeat manager reference count: {PipelineRunner._heartbeat_reference_count}")
-
-            # Always disconnect when pipeline ends (especially after End block)
-            if force_disconnect or PipelineRunner._heartbeat_reference_count <= 0:
-                PipelineRunner._heartbeat_reference_count = 0
-                if PipelineRunner._heartbeat_manager.is_connected():
-                    PipelineRunner._heartbeat_manager.disconnect()
-                    print("🔌 Heartbeat manager disconnected after pipeline completion")
-
-                # Clear the manager to force fresh connection next time
-                PipelineRunner._heartbeat_manager = None
-                print("✅ Heartbeat manager cleared")
 
     # ================== Basic Pipeline Operations ==================
 
@@ -1081,11 +1229,20 @@ class PipelineRunner:
             # Only mark MES-sourced jobs as complete (not locally generated ones)
             if job_data.get('job_id') and not str(job_data['job_id']).startswith('JOB_'):
                 try:
-                    # Import the function here to avoid circular imports
                     from complete_mes import stop_latest_workorder
-                    stop_latest_workorder(job_data['job_id'], recipe_name)
-                    print(
-                        f"✅ Successfully marked job {job_data['job_id']} as complete in MES (status: {job_data['status']})")
+                    result = stop_latest_workorder(job_data['job_id'], recipe_name  )
+
+                    if result:
+                        print(
+                            f"✅ Successfully marked job {job_data['job_id']} as complete in MES (status: {job_data['status']})"
+                        )
+
+                        # 通知 MainPage：post 成功后，尝试重新抓一次 MES
+                        PipelineRunner._notify_main_page_refresh_mes(parent_widget)
+
+                    else:
+                        print(f"⚠️ MES stop_latest_workorder returned empty/failed for job {job_data['job_id']}")
+
                 except ImportError:
                     print(f"⚠️ Could not import stop_latest_workorder from complete_mes")
                 except Exception as e:
@@ -1584,11 +1741,38 @@ class PipelineRunner:
                 PipelineRunner._heartbeat_manager = None
                 print("✅ Heartbeat manager cleared")
 
+    @staticmethod
+    def remove_pending_job(recipe_name: str, job_id: str):
+        recipe_folder = config_manager.get_recipe_folder(recipe_name)
+        if not recipe_folder:
+            return
+
+        pending_file = os.path.join(recipe_folder, 'pending_jobs.json')
+
+        existing = []
+        if os.path.exists(pending_file):
+            try:
+                with open(pending_file, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+            except Exception as e:
+                print(f"Error loading pending jobs: {e}")
+                existing = []
+
+        existing = [j for j in existing if j.get('job_id') != job_id]
+
+        try:
+            with open(pending_file, 'w', encoding='utf-8') as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving pending jobs: {e}")
+
     # ================== Screw Block Execution ==================
 
     @staticmethod
     def _execute_screw_block(block_data: Dict, step_number: int, total_steps: int, parent_widget) -> bool:
-        """Execute a Screw block - show information only."""
+        """Execute a Screw block - send coordinates before and after operator confirmation."""
+        PipelineRunner._init_heartbeat_manager()
+
         dialog = QDialog(parent_widget)
         dialog.setWindowTitle(f"Step {step_number}: Screw Operation")
         dialog.showFullScreen()
@@ -1596,6 +1780,37 @@ class PipelineRunner:
         layout = QVBoxLayout(dialog)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
+
+        recipe_name = config_manager.current_recipe
+        video_path = r"C:\Users\PC_AI_DS\Desktop\Video\1.mp4"
+
+        # Try to get block_id from block_data / config / screw_data
+        config = block_data.get('config')
+
+        try:
+            block_id = PipelineRunner._resolve_block_id(block_data)
+        except Exception as e:
+            QMessageBox.warning(
+                parent_widget,
+                "⚠️ Missing Block ID",
+                f"Screw block does not contain a valid block id.\n\n{str(e)}"
+            )
+            return False
+
+        print(f"🔍 Screw block resolved block_id = {block_id}")
+        print(f"   block_data keys = {list(block_data.keys())}")
+        if isinstance(config, dict):
+            print(f"   config keys = {list(config.keys())}")
+
+        print(f"🔍 Screw block resolved block_id = {block_id}")
+        print(f"   block_data keys = {list(block_data.keys())}")
+        if isinstance(config, dict):
+            print(f"   config keys = {list(config.keys())}")
+
+        # ===== SEND FIRST COORDINATES: ScrewBoxesData/Block_x =====
+        first_send_success, first_coord_string = PipelineRunner._send_latest_coordinates_from_folder(
+            recipe_name, "ScrewBoxesData", block_id
+        )
 
         # Header
         header = QLabel(f"🔩 Screw Operation - Step {step_number}")
@@ -1613,8 +1828,43 @@ class PipelineRunner:
         header.setAlignment(Qt.AlignCenter)
         layout.addWidget(header)
 
+        # TCP send status for first coordinates
+        # first_coord_status = QLabel()
+        # if first_send_success:
+        #     first_coord_status.setText(
+        #         # f"✅ Sent ScrewBoxesData coordinates to TCP\n"
+        #         # f"Folder: {recipe_name}/ScrewBoxesData/Block_{block_id}\n"
+        #         # f"{first_coord_string}"
+        #     )
+        #     first_coord_status.setStyleSheet("""
+        #         QLabel {
+        #             font-size: 13px;
+        #             color: #27ae60;
+        #             padding: 12px;
+        #             background-color: #e8f8ef;
+        #             border-radius: 8px;
+        #             font-weight: bold;
+        #         }
+        #     """)
+        # else:
+        #     first_coord_status.setText(
+        #         f"⚠️ Failed to send ScrewBoxesData coordinates\n"
+        #         f"Folder: {recipe_name}/ScrewBoxesData/Block_{block_id}"
+        #     )
+        #     first_coord_status.setStyleSheet("""
+        #         QLabel {
+        #             font-size: 13px;
+        #             color: #e74c3c;
+        #             padding: 12px;
+        #             background-color: #ffebee;
+        #             border-radius: 8px;
+        #             font-weight: bold;
+        #         }
+        #     """)
+        # first_coord_status.setWordWrap(True)
+        # layout.addWidget(first_coord_status)
+
         # Show configuration
-        config = block_data.get('config')
         if config:
             info_frame = QFrame()
             info_frame.setStyleSheet("""
@@ -1622,8 +1872,8 @@ class PipelineRunner:
                     border: 2px solid #f39c12;
                     border-radius: 8px;
                     background-color: #fff9e6;
-                    padding: 20px;
-                    margin: 10px;
+                    padding: 6px;
+                    margin: 6px;
                 }
             """)
 
@@ -1643,7 +1893,6 @@ class PipelineRunner:
             title_label.setAlignment(Qt.AlignCenter)
             info_layout.addWidget(title_label)
 
-            # Parse configuration
             if isinstance(config, dict):
                 screw_count = config.get('count', 'Not specified')
                 screw_type = config.get('type', 'Not specified')
@@ -1672,7 +1921,6 @@ class PipelineRunner:
                 torque = "Unknown"
                 position = "Unknown"
 
-            # Display configuration
             info_grid = QGridLayout()
             info_grid.setSpacing(10)
 
@@ -1680,7 +1928,8 @@ class PipelineRunner:
                 ("🔢 Screw Count:", screw_count),
                 ("⚙️ Screw Type:", screw_type),
                 ("💪 Torque Setting:", torque),
-                ("📍 Screw Positions:", position)
+                ("📍 Screw Positions:", position),
+                ("🧩 Block ID:", block_id),
             ]
 
             for i, (label_text, value) in enumerate(labels):
@@ -1691,7 +1940,7 @@ class PipelineRunner:
                 value_label = QLabel(str(value))
                 value_label.setStyleSheet(
                     "font-size: 15px; padding: 5px; background-color: white; border-radius: 4px; border: 1px solid #bdc3c7;")
-                if i == 3:  # Position field
+                if i == 3:
                     value_label.setWordWrap(True)
                 info_grid.addWidget(value_label, i, 1)
 
@@ -1699,7 +1948,6 @@ class PipelineRunner:
             info_layout.addStretch()
             layout.addWidget(info_frame)
         else:
-            # No configuration
             warning_frame = QFrame()
             warning_frame.setStyleSheet("""
                 QFrame {
@@ -1779,7 +2027,25 @@ class PipelineRunner:
         instructions_layout.addWidget(instructions_text)
         layout.addWidget(instructions_frame)
 
-        # OK button
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        cancel_btn = QPushButton("❌ Cancel")
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 16px;
+                padding: 12px 24px;
+                background-color: #e74c3c;
+                color: white;
+                border-radius: 8px;
+                min-width: 150px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+        """)
+
         ok_btn = QPushButton("✅ OK - Continue")
         ok_btn.setStyleSheet("""
             QPushButton {
@@ -1788,6 +2054,7 @@ class PipelineRunner:
                 background-color: #2ecc71;
                 color: white;
                 border-radius: 8px;
+                min-width: 220px;
                 margin-top: 15px;
                 font-weight: bold;
             }
@@ -1795,11 +2062,88 @@ class PipelineRunner:
                 background-color: #27ae60;
             }
         """)
-        ok_btn.clicked.connect(dialog.accept)
-        layout.addWidget(ok_btn)
+
+        cancel_btn.clicked.connect(dialog.reject)
+
+        def on_ok_continue():
+            # Send second coordinates first
+            second_send_success, second_coord_string = PipelineRunner._send_latest_coordinates_from_folder(
+                recipe_name, "ScrewBoxesData2", block_id
+            )
+
+            if second_send_success:
+                print(f"✅ Sent ScrewBoxesData2 coordinates before video: {second_coord_string}")
+            else:
+                print(f"⚠️ Failed to send ScrewBoxesData2 coordinates before video")
+
+            dialog.accept()
+
+            # Show video after operator pressed OK
+            PipelineRunner._show_video_dialog(
+                video_path=video_path,
+                parent_widget=parent_widget,
+                title=f"Step {step_number}: Screw Video"
+            )
+
+        ok_btn.clicked.connect(on_ok_continue)
+
+        button_layout.addWidget(cancel_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(ok_btn)
+        layout.addLayout(button_layout)
 
         result = dialog.exec()
         return result == QDialog.Accepted
+
+    @staticmethod
+    def _resolve_block_id(block_data: Dict) -> str:
+        """Resolve actual block id for Block_x folders using saved block id only."""
+        candidates = []
+
+        if isinstance(block_data, dict):
+            # direct fields
+            candidates.extend([
+                block_data.get("id"),
+                block_data.get("block_id"),
+                block_data.get("block_number"),
+                block_data.get("index"),
+            ])
+
+            # nested config
+            config = block_data.get("config")
+            if isinstance(config, dict):
+                candidates.extend([
+                    config.get("id"),
+                    config.get("block_id"),
+                    config.get("block_number"),
+                    config.get("index"),
+                ])
+
+            # nested screw_data
+            screw_data = block_data.get("screw_data")
+            if isinstance(screw_data, dict):
+                candidates.extend([
+                    screw_data.get("id"),
+                    screw_data.get("block_id"),
+                    screw_data.get("block_number"),
+                    screw_data.get("index"),
+                ])
+
+            # nested capture_info
+            capture_info = block_data.get("capture_info")
+            if isinstance(capture_info, dict):
+                candidates.extend([
+                    capture_info.get("id"),
+                    capture_info.get("block_id"),
+                    capture_info.get("block_number"),
+                    capture_info.get("index"),
+                ])
+
+        for value in candidates:
+            if value is not None and str(value).strip() != "":
+                return str(value)
+
+        raise ValueError("Cannot resolve block id from block_data")
 
     # ================== Generic Block Execution ==================
 
@@ -1825,7 +2169,7 @@ class PipelineRunner:
                 color: white;
                 background-color: #3498db;
                 padding: 15px;
-                border-radius: 8px;
+                border-radius: 6px;
                 margin-bottom: 15px;
             }
         """)
@@ -2897,35 +3241,35 @@ class PipelineRunner:
                 saved_layout.addWidget(saved_header)
 
                 # ===== COORDINATE STATUS =====
-                coord_status = QLabel()
-                if coordinates_sent:
-                    coord_status.setText(f"✅ Coordinates sent to 127.0.0.1:8888\n{coord_string}")
-                    coord_status.setStyleSheet("""
-                        QLabel {
-                            font-size: 14px;
-                            color: #27ae60;
-                            padding: 15px;
-                            background-color: #e8f8ef;
-                            border-radius: 8px;
-                            margin: 10px;
-                            font-weight: bold;
-                        }
-                    """)
-                else:
-                    coord_status.setText("⚠️ Failed to send coordinates to server")
-                    coord_status.setStyleSheet("""
-                        QLabel {
-                            font-size: 14px;
-                            color: #e74c3c;
-                            padding: 15px;
-                            background-color: #ffebee;
-                            border-radius: 8px;
-                            margin: 10px;
-                            font-weight: bold;
-                        }
-                    """)
-                coord_status.setWordWrap(True)
-                saved_layout.addWidget(coord_status)
+                # coord_status = QLabel()
+                # if coordinates_sent:
+                #     # coord_status.setText(f"✅ Coordinates sent to 127.0.0.1:8888\n{coord_string}")
+                #     # coord_status.setStyleSheet("""
+                #     #     QLabel {
+                #     #         font-size: 14px;
+                #     #         color: #27ae60;
+                #     #         padding: 15px;
+                #     #         background-color: #e8f8ef;
+                #     #         border-radius: 8px;
+                #     #         margin: 10px;
+                #     #         font-weight: bold;
+                #     #     }
+                #     # """)
+                # else:
+                #     coord_status.setText("⚠️ Failed to send coordinates to server")
+                #     coord_status.setStyleSheet("""
+                #         QLabel {
+                #             font-size: 14px;
+                #             color: #e74c3c;
+                #             padding: 15px;
+                #             background-color: #ffebee;
+                #             border-radius: 8px;
+                #             margin: 10px;
+                #             font-weight: bold;
+                #         }
+                #     """)
+                # coord_status.setWordWrap(True)
+                # saved_layout.addWidget(coord_status)
 
                 # ===== IMAGE DISPLAY =====
                 saved_image_label = QLabel()
@@ -3032,3 +3376,22 @@ class PipelineRunner:
             # Clean up timer
             if loading_timer.isActive():
                 loading_timer.stop()
+
+    @staticmethod
+    def _notify_main_page_refresh_mes(parent_widget, force=False):
+        """通知 MainPage 尝试刷新一次 MES recipe"""
+        try:
+            if not parent_widget:
+                return
+
+            if force:
+                if hasattr(parent_widget, "fetch_mes_recipe_once"):
+                    parent_widget.fetch_mes_recipe_once(force=True)
+                    return
+
+            if hasattr(parent_widget, "try_fetch_mes_recipe"):
+                parent_widget.try_fetch_mes_recipe()
+            elif hasattr(parent_widget, "fetch_mes_recipe_once"):
+                parent_widget.fetch_mes_recipe_once()
+        except Exception as e:
+            print(f"⚠️ Failed to notify MainPage to refresh MES: {e}")

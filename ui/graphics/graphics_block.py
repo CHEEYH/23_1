@@ -26,7 +26,7 @@ class GraphicsBlock(QGraphicsRectItem):
 
         # Handle block_id and block_type
         if block_id is None:
-            self.block_id = "1"
+            self.block_id = None
         else:
             self.block_id = str(block_id)
 
@@ -35,7 +35,10 @@ class GraphicsBlock(QGraphicsRectItem):
         else:
             self.block_type = block_type
 
-        self.block_name = f"{self.block_type.title()} {self.block_id}"
+        if self.block_id is not None:
+            self.block_name = f"Block_{self.block_id}"
+        else:
+            self.block_name = None
 
         # Set initial block position
         self.setPos(x, y)
@@ -90,11 +93,19 @@ class GraphicsBlock(QGraphicsRectItem):
                 self.input_port.port_type = "input"
 
     def mouseDoubleClickEvent(self, event):
-        if event.buttons() == Qt.LeftButton:
-            if self.name in ["Assembly", "Screw"]:
-                # Directly open edit dialog with current config
-                self.open_configuration_dialog(edit_mode=True)
-                return  # Don't propagate event further
+        try:
+            scene = self.scene()
+            if scene and hasattr(scene, "page") and scene.page:
+                if self.name == "Assembly":
+                    scene.page.configure_assembly_block(self)
+                    event.accept()
+                    return
+                elif self.name == "Screw":
+                    scene.page.configure_screw_block(self)
+                    event.accept()
+                    return
+        except Exception as e:
+            print(f"ERROR in mouseDoubleClickEvent: {e}")
 
         super().mouseDoubleClickEvent(event)
 
@@ -391,17 +402,16 @@ class GraphicsBlock(QGraphicsRectItem):
         return dialog
 
     def configure_screw(self):
-        """Open screw configuration dialog"""
-        # Prepare initial configuration if exists
         initial_config = None
         if self.config:
-            # Parse existing config to pre-fill dialog
             initial_config = self.parse_screw_config()
 
-        # Open screw dialog
-        dialog = ScrewDialog()
+        dialog = ScrewDialog(
+            parent=None,
+            block_id=str(self.block_id) if self.block_id is not None else None,
+            block_name=f"Block_{self.block_id}" if self.block_id is not None else None
+        )
 
-        # If we have existing config, pre-fill the dialog
         if initial_config:
             dialog.screw_spinbox.setValue(initial_config.get('count', 4))
             if initial_config.get('type') in ["M3", "M4", "M5", "M6", "M8", "M10", "Custom"]:
@@ -411,7 +421,6 @@ class GraphicsBlock(QGraphicsRectItem):
             dialog.torque_spinbox.setValue(initial_config.get('torque', 10))
 
         if dialog.exec():
-            # Update configuration
             self.update_screw_configuration(dialog)
         else:
             print("Screw configuration cancelled")
@@ -447,31 +456,26 @@ class GraphicsBlock(QGraphicsRectItem):
             return config_dict
 
     def update_screw_configuration(self, dialog):
-        """Update screw block configuration from dialog"""
         self.config = {
             'block_type': 'screw',
+            'block_id': str(self.block_id) if self.block_id is not None else None,
+            'block_name': f"Block_{self.block_id}" if self.block_id is not None else None,
             'type': dialog.screw_type,
             'count': dialog.screw_count,
             'torque': dialog.torque
         }
 
-        # Update visual feedback
         self.update_block_appearance()
 
-        # Update block text to show configuration summary
-        self.text.setPlainText(f"Screw\n({dialog.screw_count})")
+        if self.block_id is not None:
+            self.text.setPlainText(f"Screw (Block {self.block_id}, {dialog.screw_count}x {dialog.screw_type})")
+        else:
+            self.text.setPlainText(f"Screw ({dialog.screw_count}x {dialog.screw_type})")
 
-        # Center the text
         text_rect = self.text.boundingRect()
         text_x = (self.block_width - text_rect.width()) / 2
         text_y = (self.block_height - text_rect.height()) / 2
         self.text.setPos(text_x, text_y)
-
-        QMessageBox.information(None, "✅ Configuration Saved",
-                                f"Screw block configured:\n\n"
-                                f"Type: {dialog.screw_type}\n"
-                                f"Count: {dialog.screw_count}\n"
-                                f"Torque: {dialog.torque} N·m")
 
     def show_configuration_view(self):
         """Show configuration in a view-only dialog"""

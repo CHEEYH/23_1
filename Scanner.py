@@ -16,7 +16,7 @@ class TCPServer:
         self.host = host or SERVER_IP
         self.port = port or SERVER_PORT
         self.server_socket = None
-        self.learn_mode = False
+        self.mode = None                # 'learn', 'check', or None
         self.com_port = None
         self.scan_active = False
         self.running = True
@@ -61,18 +61,19 @@ class TCPServer:
 
                 print(f"Received: {data}")
 
-                if data.lower() == "learn":
-                    if not self.learn_mode:
-                        self.learn_mode = True
+                if data.lower() in ["learn", "check"]:
+                    if self.mode is None:
+                        self.mode = data.lower()          # 'learn' or 'check'
                         self.current_client_socket = client_socket
-                        self.learn_loop(client_socket)  # This will start scanning immediately
+                        self.start_scanning(client_socket)
+                    else:
+                        client_socket.send("Already in a scanning mode. Wait for completion.\n".encode('utf-8'))
 
                 elif data.lower() == "exit":
                     break
 
                 else:
-                    # Ignore all other commands when not in learn mode
-                    print("Unknown command. Send 'learn' to enter learn mode.")
+                    print("Unknown command. Send 'learn' or 'check' to start scanning.")
 
         except ConnectionResetError:
             print("Client disconnected unexpectedly")
@@ -81,19 +82,16 @@ class TCPServer:
         finally:
             if self.current_client_socket == client_socket:
                 self.current_client_socket = None
-                self.learn_mode = False
+                self.mode = None
             client_socket.close()
             self.cleanup()
 
-    def learn_loop(self, client_socket):
+    def start_scanning(self, client_socket):
         """
-        Called when 'learn' is received.
-        Immediately starts scanning. Exits when scanning finishes.
+        Called when 'learn' or 'check' is received.
+        Immediately starts scanning. Exits when 'ok' is received or client disconnects.
         """
-        # Start scanning right away
-        self.handle_scan(client_socket)
-        # After scan ends (due to 'learn done' or disconnect), learn mode is already False
-        # No further action needed.
+        self.scanning_loop(client_socket)
 
     def extract_data_between_pipes(self, data):
         """Extract data between || symbols from the received string"""
@@ -111,10 +109,12 @@ class TCPServer:
             print(f"Error extracting data: {e}")
             return None
 
-    def handle_scan(self, client_socket):
+    def scanning_loop(self, client_socket):
         """
-        Scan loop: reads from COM port and sends extracted data to client.
-        Runs until 'learn done' is received or client disconnects.
+        Scan loop: reads from COM port and sends data to client.
+        - In 'learn' mode: tries to extract text between ||, sends raw if no pipes.
+        - In 'check' mode: sends all raw data, but replaces underscores with newlines.
+        Runs until 'ok' is received or client disconnects.
         """
         if self.scan_active:
             return
@@ -130,17 +130,16 @@ class TCPServer:
                 timeout=COM_PORT_TIMEOUT
             )
 
-            while self.scan_active and self.running and self.learn_mode:
+            while self.scan_active and self.running and self.mode is not None:
                 try:
                     # Check for client commands (non-blocking)
                     client_socket.settimeout(0.1)
                     try:
                         data = client_socket.recv(1024).decode('utf-8').strip()
                         if data.lower() == "ok":
-                            print("Exiting learn mode")
-                            self.learn_mode = False
+                            print("Exiting scanning mode")
+                            self.mode = None
                             break
-                        # Ignore any other commands (including 'ok')
                     except socket.timeout:
                         pass  # No command, continue reading COM port
 
@@ -151,11 +150,17 @@ class TCPServer:
                             decoded_data = com_data.decode('utf-8', errors='ignore')
                             print(f"Raw data from {COM_PORT_NAME}: {decoded_data}")
 
-                            extracted_data = self.extract_data_between_pipes(decoded_data)
-                            if extracted_data:
-                                client_socket.send(f"{extracted_data}\n".encode('utf-8'))
-                            else:
-                                client_socket.send(f"{decoded_data}\n".encode('utf-8'))
+                            # Choose what to send based on mode
+                            if self.mode == 'check':
+                                # Replace underscores with newlines so data appears on separate lines
+                                processed_data = decoded_data.replace('_', '\n')
+                                client_socket.send(f"{processed_data}\n".encode('utf-8'))
+                            else:  # 'learn' mode
+                                extracted_data = self.extract_data_between_pipes(decoded_data)
+                                if extracted_data:
+                                    client_socket.send(f"{extracted_data}\n".encode('utf-8'))
+                                else:
+                                    client_socket.send(f" {decoded_data}\n".encode('utf-8'))
 
                 except Exception as e:
                     print(f"Error during scan: {e}")
@@ -184,7 +189,7 @@ class TCPServer:
     def cleanup(self):
         """Cleanup resources"""
         self.close_com_port()
-        self.learn_mode = False
+        self.mode = None
         self.scan_active = False
         self.current_client_socket = None
 

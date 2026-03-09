@@ -126,10 +126,13 @@ class CaptureWorker(QThread):
             if CAMERA_AVAILABLE:
                 AutoCaptureFlow(callback=capture_callback)
             else:
-                self.simulate_capture(capture_callback)
+                self.finished.emit(False, "Camera module not available", None)
 
         except Exception as e:
             self.finished.emit(False, f"Capture error: {str(e)}", None)
+
+    def stop(self):
+        self.is_running = False
 
 
 class AssemblyDialog(QDialog):
@@ -258,7 +261,7 @@ class AssemblyDialog(QDialog):
         toolbar_layout = QHBoxLayout(prediction_toolbar)
         toolbar_layout.setSpacing(10)
 
-        # ===== ASSEMBLY TOOL BUTTON =====
+        # ===== ASSEMBLY LOCATION BUTTON =====
         self.assembly_tool_btn = QPushButton("🛠️ Assembly Location")
         self.assembly_tool_btn.setStyleSheet("""
             QPushButton {
@@ -793,14 +796,13 @@ class AssemblyDialog(QDialog):
             if self.assembly_tool_window and self.assembly_tool_window.isVisible():
                 self.assembly_tool_window.raise_()
                 self.assembly_tool_window.activateWindow()
-
-                # 先把自己隐藏，不然会挡住点击
                 self.hide()
                 return
 
             self.assembly_tool_window = AssemblyLaserMainWindow(
                 block_id=str(self.block_id),
-                block_name=str(self.block_name)
+                block_name=str(self.block_name),
+                mode="assembly"
             )
 
             self.assembly_tool_window.setParent(None)
@@ -825,7 +827,6 @@ class AssemblyDialog(QDialog):
             self.assembly_tool_window.raise_()
             self.assembly_tool_window.activateWindow()
 
-            # 重点：隐藏，不是关闭
             self.hide()
 
         except Exception as e:
@@ -882,31 +883,34 @@ class AssemblyDialog(QDialog):
 
     def _on_heartbeat_connection_changed(self, connected, message):
         """Handle heartbeat connection status changes"""
-        if connected:
-            self.tcp_status_label.setText(f"🟢 TCP: Connected (Heartbeat)")
-            self.tcp_status_label.setStyleSheet("""
-                QLabel {
-                    font-size: 11px;
-                    color: #27ae60;
-                    padding: 6px;
-                    background-color: #e8f8ef;
-                    border-radius: 3px;
-                    font-weight: bold;
-                }
-            """)
-            self.update_tcp_messages(f"✅ Heartbeat connected: {message}")
-        else:
-            self.tcp_status_label.setText(f"🔴 TCP: Disconnected")
-            self.tcp_status_label.setStyleSheet("""
-                QLabel {
-                    font-size: 11px;
-                    color: #e74c3c;
-                    padding: 6px;
-                    background-color: #ffebee;
-                    border-radius: 3px;
-                }
-            """)
-            self.update_tcp_messages(f"🔴 Heartbeat disconnected: {message}")
+        if hasattr(self, 'tcp_status_label'):
+            if connected:
+                self.tcp_status_label.setText("🟢 TCP: Connected (Heartbeat)")
+                self.tcp_status_label.setStyleSheet("""
+                    QLabel {
+                        font-size: 11px;
+                        color: #27ae60;
+                        padding: 6px;
+                        background-color: #e8f8ef;
+                        border-radius: 3px;
+                        font-weight: bold;
+                    }
+                """)
+            else:
+                self.tcp_status_label.setText("🔴 TCP: Disconnected")
+                self.tcp_status_label.setStyleSheet("""
+                    QLabel {
+                        font-size: 11px;
+                        color: #e74c3c;
+                        padding: 6px;
+                        background-color: #ffebee;
+                        border-radius: 3px;
+                    }
+                """)
+
+        self.update_tcp_messages(
+            f"{'✅ Heartbeat connected' if connected else '🔴 Heartbeat disconnected'}: {message}"
+        )
 
     def _on_heartbeat_sent(self, message):
         """Handle heartbeat sent events"""
@@ -1601,10 +1605,10 @@ class AssemblyDialog(QDialog):
 
         # Disable capture button during capture
         step_frame = self.step_widgets[step_number]['frame']
-        capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
-        if capture_btn:
-            capture_btn.setEnabled(False)
-            capture_btn.setText("📷 Capturing...")
+        # capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
+        # if capture_btn:
+        #     capture_btn.setEnabled(False)
+        #     capture_btn.setText("📷 Capturing...")
 
         # Update status
         self.update_capture_status(step_number, "Opening camera (with AI prediction)...")
@@ -1651,10 +1655,10 @@ class AssemblyDialog(QDialog):
 
         # Disable capture button during capture
         step_frame = self.step_widgets[step_number]['frame']
-        capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
-        if capture_btn:
-            capture_btn.setEnabled(False)
-            capture_btn.setText("📷 Capturing...")
+        # capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
+        # if capture_btn:
+        #     capture_btn.setEnabled(False)
+        #     capture_btn.setText("📷 Capturing...")
 
         # Update status
         self.update_capture_status(step_number, "Opening camera (with AI prediction)...")
@@ -1696,10 +1700,10 @@ class AssemblyDialog(QDialog):
 
         # Re-enable capture button
         step_frame = self.step_widgets[step_number]['frame']
-        capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
-        if capture_btn:
-            capture_btn.setEnabled(True)
-            capture_btn.setText("📷 Capture Image for this Step")
+        # capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
+        # if capture_btn:
+        #     capture_btn.setEnabled(True)
+        #     capture_btn.setText("📷 Capture Image for this Step")
 
         if success and image_path:
             # Update step data with captured image
@@ -1711,9 +1715,9 @@ class AssemblyDialog(QDialog):
             self.update_capture_status(step_number, "1 image captured")
 
             # Enable preview button
-            preview_btn = step_frame.findChild(QPushButton, f"step_{step_number}_preview_btn")
-            if preview_btn:
-                preview_btn.setEnabled(True)
+            # preview_btn = step_frame.findChild(QPushButton, f"step_{step_number}_preview_btn")
+            # if preview_btn:
+            #     preview_btn.setEnabled(True)
 
             # Show success message for capture
             filename = os.path.basename(image_path)
@@ -1749,10 +1753,10 @@ class AssemblyDialog(QDialog):
 
         # Disable capture button during capture
         step_frame = self.step_widgets[step_number]['frame']
-        capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
-        if capture_btn:
-            capture_btn.setEnabled(False)
-            capture_btn.setText("📷 Capturing...")
+        # capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
+        # if capture_btn:
+        #     capture_btn.setEnabled(False)
+        #     capture_btn.setText("📷 Capturing...")
 
         # Update status
         self.update_capture_status(step_number, "Opening camera...")
@@ -1804,10 +1808,10 @@ class AssemblyDialog(QDialog):
         current_step = self.current_active_step
         if current_step in self.step_widgets:
             step_frame = self.step_widgets[current_step]['frame']
-            capture_btn = step_frame.findChild(QPushButton, f"step_{current_step}_capture_btn")
-            if capture_btn:
-                capture_btn.setEnabled(True)
-                capture_btn.setText("📷 Capture Images for this Step")
+            # capture_btn = step_frame.findChild(QPushButton, f"step_{current_step}_capture_btn")
+            # if capture_btn:
+            #     capture_btn.setEnabled(True)
+            #     capture_btn.setText("📷 Capture Images for this Step")
 
         self.update_capture_status(current_step, "Capture cancelled")
 
@@ -1819,19 +1823,19 @@ class AssemblyDialog(QDialog):
 
         # Re-enable capture button
         step_frame = self.step_widgets[step_number]['frame']
-        capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
-        if capture_btn:
-            capture_btn.setEnabled(True)
-            capture_btn.setText("📷 Capture Image for this Step")
+        # capture_btn = step_frame.findChild(QPushButton, f"step_{step_number}_capture_btn")
+        # if capture_btn:
+        #     capture_btn.setEnabled(True)
+        #     capture_btn.setText("📷 Capture Image for this Step")
 
         if success and image_path:
             # Update status - always show 1 image since we replace
             self.update_capture_status(step_number, "1 image captured")
 
             # Enable preview button
-            preview_btn = step_frame.findChild(QPushButton, f"step_{step_number}_preview_btn")
-            if preview_btn:
-                preview_btn.setEnabled(True)
+            # preview_btn = step_frame.findChild(QPushButton, f"step_{step_number}_preview_btn")
+            # if preview_btn:
+            #     preview_btn.setEnabled(True)
 
             # Show success message with replace info
             filename = os.path.basename(image_path)
@@ -1885,51 +1889,57 @@ class AssemblyDialog(QDialog):
 
     def update_capture_status(self, step_number, status_text):
         """Update capture status display for a step"""
-        if step_number in self.step_widgets:
-            step_frame = self.step_widgets[step_number]['frame']
-            status_label = step_frame.findChild(QLabel, f"step_{step_number}_capture_status")
-            if status_label:
-                status_label.setText(status_text)
+        if step_number not in self.step_widgets:
+            return
 
-                # Always show 1/1 when an image exists
-                step_folder = self.step_widgets[step_number].get('capture_folder')
-                if step_folder and os.path.exists(step_folder):
-                    existing_images = glob.glob(os.path.join(step_folder, "*.bmp"))
-                    if existing_images:
-                        status_label.setText("1 image captured")
+        step_frame = self.step_widgets[step_number]['frame']
+        status_label = step_frame.findChild(QLabel, f"step_{step_number}_capture_status")
 
-                if "1 image" in status_text:
-                    status_label.setStyleSheet("""
-                        QLabel {
-                            font-size: 11px;
-                            color: #27ae60;
-                            padding: 4px;
-                            background-color: #e8f8ef;
-                            border-radius: 3px;
-                            font-weight: bold;
-                        }
-                    """)
-                elif "Capture failed" in status_text:
-                    status_label.setStyleSheet("""
-                        QLabel {
-                            font-size: 11px;
-                            color: #e74c3c;
-                            padding: 4px;
-                            background-color: #ffebee;
-                            border-radius: 3px;
-                            font-weight: bold;
-                        }
-                    """)
-                else:
-                    status_label.setStyleSheet("""
-                        QLabel {
-                            font-size: 11px;
-                            color: #7f8c8d;
-                            padding: 4px;
-                            background-color: #f0f0f0;
-                            border-radius: 3px;
-                        }
-                    """)
+        if not status_label:
+            print(f"DEBUG: step_{step_number}_capture_status not found, skip UI update: {status_text}")
+            return
+
+        step_folder = self.step_widgets[step_number].get('capture_folder')
+        if step_folder and os.path.exists(step_folder):
+            pattern = os.path.join(step_folder, f"Step_{step_number}_*.bmp")
+            existing_images = glob.glob(pattern)
+            if existing_images:
+                status_text = "1 image captured"
+
+        status_label.setText(status_text)
+
+        if "1 image" in status_text:
+            status_label.setStyleSheet("""
+                QLabel {
+                    font-size: 11px;
+                    color: #27ae60;
+                    padding: 4px;
+                    background-color: #e8f8ef;
+                    border-radius: 3px;
+                    font-weight: bold;
+                }
+            """)
+        elif "Capture failed" in status_text:
+            status_label.setStyleSheet("""
+                QLabel {
+                    font-size: 11px;
+                    color: #e74c3c;
+                    padding: 4px;
+                    background-color: #ffebee;
+                    border-radius: 3px;
+                    font-weight: bold;
+                }
+            """)
+        else:
+            status_label.setStyleSheet("""
+                QLabel {
+                    font-size: 11px;
+                    color: #7f8c8d;
+                    padding: 4px;
+                    background-color: #f0f0f0;
+                    border-radius: 3px;
+                }
+            """)
 
     def preview_captured_for_step(self, step_number):
         """Preview captured image for a specific step"""
@@ -2081,16 +2091,18 @@ class AssemblyDialog(QDialog):
         structure = {
             'block_name': self.block_name,
             'assembly_folder': self.assembly_folder,
-            'step_folders': {}
+            'step_images': {}
         }
 
         for step in range(1, self.total_steps + 1):
-            step_folder = os.path.join(self.assembly_folder, f"Step_{step}")
-            if os.path.exists(step_folder):
-                structure['step_folders'][step] = {
-                    'path': step_folder,
-                    'images': glob.glob(os.path.join(step_folder, "*.bmp"))
-                }
+            pattern = os.path.join(self.assembly_folder, f"Step_{step}_*.bmp")
+            images = glob.glob(pattern)
+            images.sort(key=os.path.getmtime, reverse=True)
+
+            structure['step_images'][step] = {
+                'images': images,
+                'latest_image': images[0] if images else None
+            }
 
         return structure
 
@@ -2230,30 +2242,30 @@ class AssemblyDialog(QDialog):
                                 f"Failed to open folder: {str(e)}\n\n"
                                 f"Path: {folder_path}")
 
-    def on_image_selected(self, product_id):
-        """Handle image selection from gallery - just open camera viewer"""
-        # Find the product
-        product = None
-        for p in self.available_products:
-            if p['id'] == product_id:
-                product = p
-                break
-
-        if not product:
-            return
-
-        # Show simple message and open camera
-        reply = QMessageBox.question(
-            self,
-            f"View Camera?",
-            f"Product: {product['name']}\n\nOpen camera to view this product?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-
-        if reply == QMessageBox.Yes:
-            # Open simple camera viewer - pass just product, NOT step_number
-            self.open_simple_camera_viewer(product)  # Fixed: removed step_number parameter
+    # def on_image_selected(self, product_id):
+    #     """Handle image selection from gallery - just open camera viewer"""
+    #     # Find the product
+    #     product = None
+    #     for p in self.available_products:
+    #         if p['id'] == product_id:
+    #             product = p
+    #             break
+    #
+    #     if not product:
+    #         return
+    #
+    #     # Show simple message and open camera
+    #     reply = QMessageBox.question(
+    #         self,
+    #         f"View Camera?",
+    #         f"Product: {product['name']}\n\nOpen camera to view this product?",
+    #         QMessageBox.Yes | QMessageBox.No,
+    #         QMessageBox.Yes
+    #     )
+    #
+    #     if reply == QMessageBox.Yes:
+    #         # Open simple camera viewer - pass just product, NOT step_number
+    #         self.open_simple_camera_viewer(product)  # Fixed: removed step_number parameter
 
     def select_image_for_step(self, product_id):
         """Select image for the current step with auto capture and predict"""
@@ -2300,12 +2312,12 @@ class AssemblyDialog(QDialog):
 
                     # Disable capture and preview buttons
                     step_frame = self.step_widgets[current_step]['frame']
-                    capture_btn = step_frame.findChild(QPushButton, f"step_{current_step}_capture_btn")
-                    preview_btn = step_frame.findChild(QPushButton, f"step_{current_step}_preview_btn")
-                    if capture_btn:
-                        capture_btn.setEnabled(False)
-                    if preview_btn:
-                        preview_btn.setEnabled(False)
+                    # capture_btn = step_frame.findChild(QPushButton, f"step_{current_step}_capture_btn")
+                    # preview_btn = step_frame.findChild(QPushButton, f"step_{current_step}_preview_btn")
+                    # if capture_btn:
+                    #     capture_btn.setEnabled(False)
+                    # if preview_btn:
+                    #     preview_btn.setEnabled(False)
 
         # Find the product
         product = None
@@ -2442,9 +2454,9 @@ class AssemblyDialog(QDialog):
 
                     # Disable preview button since image is gone
                     step_frame = self.step_widgets[step_number]['frame']
-                    preview_btn = step_frame.findChild(QPushButton, f"step_{step_number}_preview_btn")
-                    if preview_btn:
-                        preview_btn.setEnabled(False)
+                    # preview_btn = step_frame.findChild(QPushButton, f"step_{step_number}_preview_btn")
+                    # if preview_btn:
+                    #     preview_btn.setEnabled(False)
 
                     return True
         except Exception as e:
@@ -2567,9 +2579,9 @@ class AssemblyDialog(QDialog):
 
             # Enable preview button? Maybe not for temp files
             step_frame = self.step_widgets[step_number]['frame']
-            preview_btn = step_frame.findChild(QPushButton, f"step_{step_number}_preview_btn")
-            if preview_btn:
-                preview_btn.setEnabled(False)  # Disable preview for temp files
+            # preview_btn = step_frame.findChild(QPushButton, f"step_{step_number}_preview_btn")
+            # if preview_btn:
+            #     preview_btn.setEnabled(False)  # Disable preview for temp files
 
             # Update status
             self.prediction_status_label.setText(f"🔍 Detecting objects...")
@@ -3022,11 +3034,11 @@ class AssemblyDialog(QDialog):
         # Buttons
         button_layout = QHBoxLayout()
 
-        # Open folder button
-        if output_path:
-            folder_btn = QPushButton("📂 Open Predictions Folder")
-            folder_btn.clicked.connect(lambda: self.open_prediction_folder(output_path))
-            button_layout.addWidget(folder_btn)
+        # # Open folder button
+        # if output_path:
+        #     folder_btn = QPushButton("📂 Open Predictions Folder")
+        #     folder_btn.clicked.connect(lambda: self.open_prediction_folder(output_path))
+        #     button_layout.addWidget(folder_btn)
 
         # Close button
         close_btn = QPushButton("Close")
@@ -3267,25 +3279,25 @@ class AssemblyDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(15)
 
-        # Open folder button
-        if output_path:
-            open_btn = QPushButton("📂 Open Predictions Folder")
-            open_btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 13px;
-                    font-weight: bold;
-                    padding: 12px 24px;
-                    background-color: #3498db;
-                    color: white;
-                    border-radius: 6px;
-                    min-width: 200px;
-                }
-                QPushButton:hover {
-                    background-color: #2980b9;
-                }
-            """)
-            open_btn.clicked.connect(lambda: self.open_prediction_folder(output_path))
-            button_layout.addWidget(open_btn)
+        # # Open folder button
+        # if output_path:
+        #     open_btn = QPushButton("📂 Open Predictions Folder")
+        #     open_btn.setStyleSheet("""
+        #         QPushButton {
+        #             font-size: 13px;
+        #             font-weight: bold;
+        #             padding: 12px 24px;
+        #             background-color: #3498db;
+        #             color: white;
+        #             border-radius: 6px;
+        #             min-width: 200px;
+        #         }
+        #         QPushButton:hover {
+        #             background-color: #2980b9;
+        #         }
+        #     """)
+        #     open_btn.clicked.connect(lambda: self.open_prediction_folder(output_path))
+        #     button_layout.addWidget(open_btn)
 
         # Done button
         done_btn = QPushButton("✓ Done")
@@ -3313,9 +3325,13 @@ class AssemblyDialog(QDialog):
 
     def _on_prediction_failed(self, step_number, product_name, message, progress_dialog):
         """Handle failed prediction"""
-        progress_dialog.close()
+        if progress_dialog:
+            try:
+                progress_dialog.close()
+                progress_dialog.deleteLater()
+            except:
+                pass
 
-        # Update status
         self.prediction_status_label.setText(f"❌ Step {step_number}: Prediction failed")
         self.prediction_status_label.setStyleSheet("""
             QLabel {
@@ -3327,7 +3343,6 @@ class AssemblyDialog(QDialog):
             }
         """)
 
-        # Show error
         QMessageBox.warning(
             self,
             f"❌ Prediction Failed - Step {step_number}",
@@ -3372,16 +3387,17 @@ class AssemblyDialog(QDialog):
 
     def update_prediction_preview(self, predictions, output_path):
         """Update the prediction preview in the UI"""
+        if not hasattr(self, 'prediction_preview_layout'):
+            print("DEBUG: prediction_preview_layout not found, skip preview update")
+            return
+
         try:
-            # Clear current preview
             while self.prediction_preview_layout.count():
                 child = self.prediction_preview_layout.takeAt(0)
                 if child.widget():
                     child.widget().deleteLater()
 
-            # Create new preview content
             if output_path and os.path.exists(output_path):
-                # Show predicted image
                 pixmap = QPixmap(output_path)
                 if not pixmap.isNull():
                     scaled_pixmap = pixmap.scaled(
@@ -3405,7 +3421,6 @@ class AssemblyDialog(QDialog):
                 else:
                     raise Exception("Cannot load image")
             else:
-                # Show placeholder
                 placeholder = QLabel("No prediction image available")
                 placeholder.setAlignment(Qt.AlignCenter)
                 placeholder.setStyleSheet("""
@@ -3418,7 +3433,6 @@ class AssemblyDialog(QDialog):
                 """)
                 self.prediction_preview_layout.addWidget(placeholder)
 
-            # Add prediction count
             if predictions:
                 count_label = QLabel(f"Detected: {len(predictions)} objects")
                 count_label.setAlignment(Qt.AlignCenter)
@@ -3437,17 +3451,6 @@ class AssemblyDialog(QDialog):
 
         except Exception as e:
             print(f"Error updating prediction preview: {e}")
-            # Add error message
-            error_label = QLabel(f"Error loading prediction: {str(e)}")
-            error_label.setAlignment(Qt.AlignCenter)
-            error_label.setStyleSheet("""
-                QLabel {
-                    font-size: 12px;
-                    color: #e74c3c;
-                    padding: 20px;
-                }
-            """)
-            self.prediction_preview_layout.addWidget(error_label)
 
     def closeEvent(self, event):
         """Clean up on dialog close"""
@@ -3672,29 +3675,6 @@ class AssemblyDialog(QDialog):
         """Check if all steps have selections"""
         all_selected = all(step in self.step_selections for step in range(1, self.total_steps + 1))
         self.ok_btn.setEnabled(all_selected)
-
-    def validate_and_accept(self):
-        """Validate selections and accept dialog"""
-        print(f"🔴🔴🔴 validate_and_accept CALLED 🔴🔴🔴")
-
-        # Verify all steps have selections
-        for step in range(1, self.total_steps + 1):
-            if step not in self.step_selections:
-                QMessageBox.warning(self, "⚠️ Missing Selection",
-                                    f"Please select a product for Step {step}")
-                self.set_active_step(step)
-                return  # This returns None, not False
-
-        # Make sure we have valid data before accepting
-        if not self.step_selections:
-            QMessageBox.warning(self, "⚠️ No Selections",
-                                "No steps have been configured.")
-            return  # This returns None, not False
-
-        print(f"DEBUG: Accepting dialog with {len(self.step_selections)} steps")
-
-        # This returns QDialog.accept() which sets the dialog result to Accepted
-        super().accept()  # Use super().accept() instead of self.accept()
 
     def get_current_recipe_info(self):
         """Get information about current recipe"""
@@ -4201,27 +4181,51 @@ class AssemblyDialog(QDialog):
             }
 
     def validate_and_accept(self):
-        """Validate selections and accept dialog"""
-        print(f"🔴🔴🔴 validate_and_accept CALLED 🔴🔴🔴")
+        """Validate selections, build final assembly config, then accept"""
+        print("🔴🔴🔴 validate_and_accept CALLED 🔴🔴🔴")
 
-        # Verify all steps have selections
         for step in range(1, self.total_steps + 1):
             if step not in self.step_selections:
-                QMessageBox.warning(self, "⚠️ Missing Selection",
-                                    f"Please select a product for Step {step}")
+                QMessageBox.warning(
+                    self,
+                    "⚠️ Missing Selection",
+                    f"Please select a product for Step {step}"
+                )
                 self.set_active_step(step)
-                return  # This returns None, not False
+                return
 
-        # Make sure we have valid data before accepting
         if not self.step_selections:
-            QMessageBox.warning(self, "⚠️ No Selections",
-                                "No steps have been configured.")
-            return  # This returns None, not False
+            QMessageBox.warning(
+                self,
+                "⚠️ No Selections",
+                "No steps have been configured."
+            )
+            return
 
-        print(f"DEBUG: Accepting dialog with {len(self.step_selections)} steps")
+        final_config = self.get_all_selections()
 
-        # This returns QDialog.accept() which sets the dialog result to Accepted
-        super().accept()  # Use super().accept() instead of self.accept()
+        if not isinstance(final_config, dict):
+            QMessageBox.warning(
+                self,
+                "⚠️ Save Failed",
+                "Assembly configuration is invalid."
+            )
+            return
+
+        # 关键：把最终结果明确存下来
+        self.config_data = final_config
+        self.assembly_data = final_config
+
+        print(f"DEBUG: Final assembly config prepared: {final_config}")
+        print(f"DEBUG: Accepting dialog with {len(final_config.get('selections', {}))} steps")
+
+        super().accept()
+
+    def get_config(self):
+        """Return final assembly config"""
+        if hasattr(self, "assembly_data") and isinstance(self.assembly_data, dict):
+            return self.assembly_data
+        return self.get_all_selections()
 
     # ========== PREDICTION METHODS ==========
 
@@ -4465,7 +4469,7 @@ class AssemblyDialog(QDialog):
                     background-color: #2980b9;
                 }
             """)
-            view_btn.clicked.connect(lambda: self.open_prediction_folder(None))
+            view_btn.clicked.connect(self.open_predictions_root_folder)
             button_layout.addWidget(view_btn)
 
         close_btn = QPushButton("Close")
@@ -4552,7 +4556,7 @@ class AssemblyDialog(QDialog):
         self.update_prediction_preview(predictions, output_path if output_path else "")
 
         # Update prediction results label
-        if predictions:
+        if predictions and hasattr(self, 'prediction_results_label'):
             self.prediction_results_label.setText(f"Step {step_number}: {len(predictions)} objects")
             self.prediction_results_label.setStyleSheet("""
                 QLabel {
@@ -4700,14 +4704,12 @@ class AssemblyDialog(QDialog):
     def _perform_model_load(self, model_path, loading_dialog):
         """Perform the actual model loading in a separate call"""
         try:
-            # Use shared prediction manager
             success, message = self.prediction_manager.load_model(model_path)
 
             if success:
-                # Update UI
-                self.test_prediction_btn.setEnabled(True)
+                if hasattr(self, 'test_prediction_btn'):
+                    self.test_prediction_btn.setEnabled(True)
 
-                # Only enable predict_all_btn if it exists
                 if hasattr(self, 'predict_all_btn'):
                     self.predict_all_btn.setEnabled(True)
 
@@ -4743,19 +4745,17 @@ class AssemblyDialog(QDialog):
                     f"Images will be automatically predicted when selected."
                 )
 
-                # ========== AUTO-PREDICT EXISTING SELECTIONS ==========
-                # If there are already selected images, auto-predict them
                 QTimer.singleShot(500, self.auto_predict_existing_selections)
 
             else:
                 loading_dialog.close()
                 QMessageBox.critical(self, "Load Failed", message)
-                self.reset_prediction_ui()  # This was missing!
+                self.reset_prediction_ui()
 
         except Exception as e:
             loading_dialog.close()
             QMessageBox.critical(self, "Load Failed", f"Failed to load model:\n{str(e)}")
-            self.reset_prediction_ui()  # This was missing!
+            self.reset_prediction_ui()
 
     def auto_predict_existing_selections(self):
         """Auto-predict already selected steps after model load"""
@@ -4783,7 +4783,6 @@ class AssemblyDialog(QDialog):
     def reset_prediction_ui(self):
         """Reset the prediction UI to default state"""
         try:
-            # Reset model status
             self.model_status_label.setText("No model loaded")
             self.model_status_label.setStyleSheet("""
                 QLabel {
@@ -4795,7 +4794,6 @@ class AssemblyDialog(QDialog):
                 }
             """)
 
-            # Reset prediction status
             self.prediction_status_label.setText("Prediction: Ready")
             self.prediction_status_label.setStyleSheet("""
                 QLabel {
@@ -4807,34 +4805,33 @@ class AssemblyDialog(QDialog):
                 }
             """)
 
-            # Reset prediction preview
-            while self.prediction_preview_layout.count():
-                child = self.prediction_preview_layout.takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
+            if hasattr(self, 'prediction_preview_layout'):
+                while self.prediction_preview_layout.count():
+                    child = self.prediction_preview_layout.takeAt(0)
+                    if child.widget():
+                        child.widget().deleteLater()
 
-            # Add default message
-            self.prediction_message = QLabel("Load a model and select an image to see predictions")
-            self.prediction_message.setAlignment(Qt.AlignCenter)
-            self.prediction_message.setStyleSheet("""
-                QLabel {
-                    font-size: 14px;
-                    color: #7f8c8d;
-                    padding: 50px;
-                    font-style: italic;
-                }
-            """)
-            self.prediction_preview_layout.addWidget(self.prediction_message)
+                self.prediction_message = QLabel("Load a model and select an image to see predictions")
+                self.prediction_message.setAlignment(Qt.AlignCenter)
+                self.prediction_message.setStyleSheet("""
+                    QLabel {
+                        font-size: 14px;
+                        color: #7f8c8d;
+                        padding: 50px;
+                        font-style: italic;
+                    }
+                """)
+                self.prediction_preview_layout.addWidget(self.prediction_message)
 
-            # Reset prediction results label
-            self.prediction_results_label.setText("")
+            if hasattr(self, 'prediction_results_label'):
+                self.prediction_results_label.setText("")
 
-            # Disable buttons
-            self.test_prediction_btn.setEnabled(False)
+            if hasattr(self, 'test_prediction_btn'):
+                self.test_prediction_btn.setEnabled(False)
+
             if hasattr(self, 'predict_all_btn'):
                 self.predict_all_btn.setEnabled(False)
 
-            # Clear any prediction manager state
             if hasattr(self, 'prediction_manager'):
                 self.prediction_manager.reset()
 
@@ -4934,8 +4931,8 @@ class AssemblyDialog(QDialog):
         self.update_prediction_preview(predictions, output_path)
 
         # Update prediction results label
-        if predictions:
-            self.prediction_results_label.setText(f"Step {step_number}: {len(predictions)} objects detected")
+        if predictions and hasattr(self, 'prediction_results_label'):
+            self.prediction_results_label.setText(f"Step {step_number}: {len(predictions)} objects")
             self.prediction_results_label.setStyleSheet("""
                 QLabel {
                     font-size: 12px;
@@ -5089,6 +5086,48 @@ class AssemblyDialog(QDialog):
             QMessageBox.warning(self, "Cannot Open Folder",
                                 f"Failed to open folder:\n{str(e)}\n\nPath: {folder_path}")
 
+    def open_predictions_root_folder(self):
+        """Open the predictions folder for current block"""
+        recipe_path = self.get_current_recipe_path()
+        if not recipe_path:
+            QMessageBox.warning(self, "Folder Not Found", "Recipe folder not found.")
+            return
+
+        predictions_folder = os.path.join(
+            recipe_path,
+            "Assembly",
+            f"Block_{self.block_id}",
+            "predictions"
+        )
+
+        if not os.path.exists(predictions_folder):
+            QMessageBox.warning(
+                self,
+                "Folder Not Found",
+                f"Predictions folder not found:\n{predictions_folder}"
+            )
+            return
+
+        try:
+            import subprocess
+            import platform
+
+            system = platform.system()
+
+            if system == "Windows":
+                os.startfile(predictions_folder)
+            elif system == "Darwin":
+                subprocess.Popen(["open", predictions_folder])
+            else:
+                subprocess.Popen(["xdg-open", predictions_folder])
+
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Cannot Open Folder",
+                f"Failed to open folder:\n{str(e)}\n\nPath: {predictions_folder}"
+            )
+
     def cancel_prediction(self):
         """Cancel any ongoing prediction"""
         if hasattr(self, 'prediction_manager'):
@@ -5097,7 +5136,7 @@ class AssemblyDialog(QDialog):
 
     @property
     def selected_step(self):
-        return self.total_steps
+        return self.current_active_step
 
     @property
     def selected_product(self):
@@ -5113,27 +5152,32 @@ class AssemblyDialog(QDialog):
 
 
 class ScrewDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, block_id=None, block_name=None, initial_config=None):
         super().__init__(parent)
+        print(f"DEBUG ScrewDialog __init__ -> self={id(self)}, block_id={block_id}, block_name={block_name}")
+        self.parent_dialog = parent
+        self.block_id = block_id or "1"
+        self.block_name = block_name or f"Block_{self.block_id}"
+        self.assembly_tool_window = None
+        self.config_data = None
+
         self.setWindowTitle("Screw Configuration")
-        self.setFixedSize(300, 180)
+        self.setFixedSize(250, 260)
 
         layout = QFormLayout(self)
 
-        # Number of screws
         self.screw_spinbox = QSpinBox()
-        self.screw_spinbox.setRange(1, 100)
+        self.screw_spinbox.setRange(1, 50)
         self.screw_spinbox.setValue(4)
         self.screw_spinbox.setStyleSheet("font-size: 14px; padding: 5px;")
         layout.addRow("🔩 Number of Screws:", self.screw_spinbox)
 
-        # Screw type selection
         self.screw_type_combo = QComboBox()
         self.screw_type_combo.addItems(["M3", "M4", "M5", "M6", "M8", "M10", "Custom"])
+        self.screw_type_combo.setCurrentText("M4")
         self.screw_type_combo.setStyleSheet("font-size: 14px; padding: 5px;")
         layout.addRow("⚙️ Screw Type:", self.screw_type_combo)
 
-        # Torque setting (optional)
         self.torque_spinbox = QSpinBox()
         self.torque_spinbox.setRange(1, 100)
         self.torque_spinbox.setValue(10)
@@ -5141,22 +5185,174 @@ class ScrewDialog(QDialog):
         self.torque_spinbox.setStyleSheet("font-size: 14px; padding: 5px;")
         layout.addRow("💪 Torque:", self.torque_spinbox)
 
-        # Buttons
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        self.screw_location_btn = QPushButton("🔩 Screw Location")
+        self.screw_location_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 12px;
+                padding: 8px 12px;
+                background-color: #FF9800;
+                color: white;
+                border-radius: 4px;
+                font-weight: bold;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        self.screw_location_btn.clicked.connect(self.open_assembly_tool)
+        self.screw_location_btn.setToolTip("Open the same Assembly Annotation Tool page")
+        layout.addRow(self.screw_location_btn)
 
-        # Store result
-        self.screw_count = 4
-        self.screw_type = "M4"
-        self.torque = 10
+        self.screw_location_2_btn = QPushButton("🔩 Screw Location 2")
+        self.screw_location_2_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 12px;
+                padding: 8px 12px;
+                background-color: #9C27B0;
+                color: white;
+                border-radius: 4px;
+                font-weight: bold;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #7B1FA2;
+            }
+        """)
+        self.screw_location_2_btn.clicked.connect(self.open_assembly_tool_2)
+        self.screw_location_2_btn.setToolTip("Open alternate screw location tool with separate folders")
+        layout.addRow(self.screw_location_2_btn)
+
+        # OK / Cancel buttons
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addRow(btn_row)
+
+        if initial_config and isinstance(initial_config, dict):
+            self.load_initial_config(initial_config)
+
+    def load_initial_config(self, config):
+        self.screw_spinbox.setValue(int(config.get("count", 4)))
+        self.screw_type_combo.setCurrentText(str(config.get("type", "M4")))
+        self.torque_spinbox.setValue(int(config.get("torque", 10)))
+
+    def get_config(self):
+        return {
+            "block_type": "screw",
+            "block_id": str(self.block_id),
+            "block_name": str(self.block_name),
+            "count": int(self.screw_spinbox.value()),
+            "type": str(self.screw_type_combo.currentText()),
+            "torque": int(self.torque_spinbox.value()),
+            "position": f"ScrewBoxesData/Block_{self.block_id}",
+            "position2": f"ScrewBoxesData2/Block_{self.block_id}"
+        }
 
     def accept(self):
-        self.screw_count = self.screw_spinbox.value()
-        self.screw_type = self.screw_type_combo.currentText()
-        self.torque = self.torque_spinbox.value()
+        self.config_data = self.get_config()
         super().accept()
+
+    def open_assembly_tool(self):
+        """Open Screw Location Tool"""
+        try:
+            from ui.components.assembly_laser import MainWindow as AssemblyLaserMainWindow
+
+            print(f"DEBUG open_assembly_tool -> block_id={self.block_id}, block_name={self.block_name}, mode=screw")
+
+            if self.assembly_tool_window:
+                try:
+                    self.assembly_tool_window.close()
+                except:
+                    pass
+                self.assembly_tool_window = None
+
+            self.assembly_tool_window = AssemblyLaserMainWindow(
+                block_id=str(self.block_id),
+                block_name=str(self.block_name),
+                mode="screw"
+            )
+
+            self.assembly_tool_window.setParent(None)
+            self.assembly_tool_window.setWindowFlags(
+                Qt.Window |
+                Qt.WindowStaysOnTopHint |
+                Qt.CustomizeWindowHint |
+                Qt.WindowTitleHint |
+                Qt.WindowMinMaxButtonsHint |
+                Qt.WindowCloseButtonHint
+            )
+            self.assembly_tool_window.setWindowModality(Qt.NonModal)
+            self.assembly_tool_window.setAttribute(Qt.WA_DeleteOnClose)
+
+            self.assembly_tool_window.destroyed.connect(self._on_assembly_tool_closed)
+
+            self.assembly_tool_window.show()
+            self.assembly_tool_window.raise_()
+            self.assembly_tool_window.activateWindow()
+
+            self.hide()
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Failed to open Screw Location Tool:\n\n{str(e)}")
+
+    def open_assembly_tool_2(self):
+        """Open Screw Location Tool 2 with separate folders"""
+        try:
+            from ui.components.assembly_laser import MainWindow as AssemblyLaserMainWindow
+
+            print(f"DEBUG open_assembly_tool_2 -> block_id={self.block_id}, block_name={self.block_name}, mode=screw2")
+
+            if self.assembly_tool_window:
+                try:
+                    self.assembly_tool_window.close()
+                except:
+                    pass
+                self.assembly_tool_window = None
+
+            self.assembly_tool_window = AssemblyLaserMainWindow(
+                block_id=str(self.block_id),
+                block_name=str(self.block_name),
+                mode="screw2"
+            )
+
+            self.assembly_tool_window.setParent(None)
+            self.assembly_tool_window.setWindowFlags(
+                Qt.Window |
+                Qt.WindowStaysOnTopHint |
+                Qt.CustomizeWindowHint |
+                Qt.WindowTitleHint |
+                Qt.WindowMinMaxButtonsHint |
+                Qt.WindowCloseButtonHint
+            )
+            self.assembly_tool_window.setWindowModality(Qt.NonModal)
+            self.assembly_tool_window.setAttribute(Qt.WA_DeleteOnClose)
+
+            self.assembly_tool_window.destroyed.connect(self._on_assembly_tool_closed)
+
+            self.assembly_tool_window.show()
+            self.assembly_tool_window.raise_()
+            self.assembly_tool_window.activateWindow()
+
+            self.hide()
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Failed to open Screw Location Tool 2:\n\n{str(e)}")
+
+    def _on_assembly_tool_closed(self):
+        """Show ScrewDialog again after tool window is closed"""
+        self.assembly_tool_window = None
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
 
 class ConfigurationOptionsDialog(QDialog):
@@ -5305,6 +5501,14 @@ class ConfigurationOptionsDialog(QDialog):
 
         layout.addLayout(button_layout)
 
+    def find_edit_flow_page(self):
+        obj = self.parent()
+        while obj:
+            if hasattr(obj, "pipeline_blocks") and hasattr(obj, "save_flow"):
+                return obj
+            obj = obj.parent()
+        return None
+
     def format_assembly_preview(self):
         """Format assembly configuration for preview"""
         if not self.assembly_data:
@@ -5321,6 +5525,42 @@ class ConfigurationOptionsDialog(QDialog):
             preview_lines.append(f"Step {step}: {product_data.get('name', product_id)} {trained_status}")
 
         return "\n".join(preview_lines)
+
+    def configure_assembly_block(self, assembly_block):
+        dialog = AssemblyDialog(
+            parent=self,
+            initial_config=assembly_block.assembly_data if hasattr(assembly_block, "assembly_data") else None,
+            block_id=str(assembly_block.block_id),
+            block_name=f"Block_{assembly_block.block_id}"
+        )
+
+        if dialog.exec() == QDialog.Accepted:
+            new_config = None
+            if hasattr(dialog, "config_data") and isinstance(dialog.config_data, dict):
+                new_config = dialog.config_data
+            elif hasattr(dialog, "assembly_data") and isinstance(dialog.assembly_data, dict):
+                new_config = dialog.assembly_data
+            else:
+                new_config = dialog.get_all_selections()
+
+            if isinstance(new_config, dict):
+                assembly_block.assembly_data = new_config
+                assembly_block.config = new_config
+
+                total_steps = new_config.get("total_steps", 0)
+                assembly_block.text.setPlainText(
+                    f"Assembly (Block {assembly_block.block_id}, {total_steps} steps)"
+                    if total_steps > 0 else
+                    f"Assembly (Block {assembly_block.block_id})"
+                )
+
+                text_rect = assembly_block.text.boundingRect()
+                text_x = (assembly_block.block_width - text_rect.width()) / 2
+                text_y = (assembly_block.block_height - text_rect.height()) / 2
+                assembly_block.text.setPos(text_x, text_y)
+
+                self.save_flow()
+                self.update_assembly_block_displays()
 
     # When user chooses to edit configuration
     def edit_assembly_configuration(self):
@@ -5355,79 +5595,65 @@ class ConfigurationOptionsDialog(QDialog):
     def edit_configuration(self, block_id, current_config):
         """Edit configuration for a block"""
         try:
-            print(f"🔴🔴🔴 edit_configuration CALLED for block {block_id} 🔴🔴🔴")
+            print(f"🔴🔴🔴 edit_configuration CALLED for block {block_id}, block_name={self.block_name} 🔴🔴🔴")
 
-            # Get assembly data from current config
+            # ===== SCREW =====
+            if self.block_name == "Screw":
+                print("DEBUG: Opening ScrewDialog")
+
+                screw_dialog = ScrewDialog(
+                    parent=self,
+                    block_id=block_id,
+                    block_name=f"Block_{block_id}",
+                    initial_config=current_config if isinstance(current_config, dict) else None
+                )
+
+                if screw_dialog.exec() == QDialog.Accepted:
+                    new_config = screw_dialog.get_config()
+                    print(f"DEBUG: Screw config accepted: {new_config}")
+                    self.save_configuration(block_id, new_config)
+                else:
+                    print("DEBUG: Screw dialog cancelled")
+
+                return True
+
+            # ===== ASSEMBLY =====
             assembly_data = None
             if isinstance(current_config, dict) and 'selections' in current_config:
                 assembly_data = current_config
                 print(f"DEBUG: Using existing assembly data with {len(assembly_data.get('selections', {}))} steps")
             else:
-                print(f"DEBUG: No existing assembly data, creating new")
+                print("DEBUG: No existing assembly data, creating new")
                 assembly_data = {'total_steps': 1, 'selections': {}}
 
-            # ===== CREATE DIALOG WITH EXPLICIT NON-MODAL FLAGS =====
             print("DEBUG: Creating AssemblyDialog...")
-
-            # First create the dialog
             self.assembly_dialog = AssemblyDialog(
-                parent=self,  # Keep parent for now
+                parent=self,
                 initial_config=assembly_data,
                 block_id=block_id,
-                block_name=self.block_name
+                block_name=f"Block_{block_id}"
             )
 
-            print(f"DEBUG: Dialog created - Initial modal state: {self.assembly_dialog.isModal()}")
-            print(f"DEBUG: Initial window flags: {self.assembly_dialog.windowFlags()}")
-
-            # ===== CRITICAL: Detach from parent completely =====
-            print("DEBUG: Detaching dialog from parent...")
             self.assembly_dialog.setParent(None)
-
-            # ===== SET WINDOW FLAGS TO MAKE IT INDEPENDENT =====
-            print("DEBUG: Setting window flags...")
             self.assembly_dialog.setWindowFlags(
-                Qt.Window |  # Make it a top-level window
+                Qt.Window |
                 Qt.CustomizeWindowHint |
                 Qt.WindowTitleHint |
                 Qt.WindowMinMaxButtonsHint |
                 Qt.WindowCloseButtonHint
-                # Note: Removed Qt.WindowStaysOnTopHint as it might interfere
             )
-
-            # ===== EXPLICITLY SET MODALITY =====
-            print("DEBUG: Setting modality to NonModal...")
             self.assembly_dialog.setWindowModality(Qt.NonModal)
             self.assembly_dialog.setModal(False)
 
-            # ===== VERIFY THE SETTINGS =====
-            print(f"DEBUG: AFTER CHANGES - Parent: {self.assembly_dialog.parent()}")
-            print(f"DEBUG: AFTER CHANGES - Modal state: {self.assembly_dialog.isModal()}")
-            print(f"DEBUG: AFTER CHANGES - Window flags: {self.assembly_dialog.windowFlags()}")
-            print(f"DEBUG: AFTER CHANGES - Window modality: {self.assembly_dialog.windowModality()}")
-
-            # ===== CONNECT SIGNALS =====
             self.assembly_dialog.finished.connect(
                 lambda result: self.on_assembly_dialog_finished(result, block_id)
             )
 
-            # Optional: Also connect accepted/rejected signals for more control
-            self.assembly_dialog.accepted.connect(
-                lambda: print(f"DEBUG: Assembly dialog accepted for block {block_id}")
-            )
-            self.assembly_dialog.rejected.connect(
-                lambda: print(f"DEBUG: Assembly dialog rejected for block {block_id}")
-            )
-
-            # ===== SHOW THE DIALOG (NON-BLOCKING) =====
-            print("DEBUG: Showing dialog (non-modal)...")
             self.assembly_dialog.show()
-
-            # Bring it to front
             self.assembly_dialog.raise_()
             self.assembly_dialog.activateWindow()
 
-            print("DEBUG: Dialog shown successfully")
+            print("DEBUG: Assembly dialog shown successfully")
             return True
 
         except Exception as e:
@@ -5436,42 +5662,95 @@ class ConfigurationOptionsDialog(QDialog):
             traceback.print_exc()
             return False
 
+    def save_configuration(self, block_id, new_config):
+        print(f"DEBUG: save_configuration called for block_id={block_id}")
+        print(f"DEBUG: new_config={new_config}")
+
+        page = self.find_edit_flow_page()
+        if not page:
+            print("❌ Could not find EditFlowPage")
+            QMessageBox.warning(self, "Save Failed", "Could not find Edit Flow page.")
+            return False
+
+        target_block = None
+
+        # 在 pipeline_blocks 里找对应 block
+        for block in page.pipeline_blocks:
+            if hasattr(block, "block_id") and str(block.block_id) == str(block_id):
+                if self.block_name == "Assembly" and block.name == "Assembly":
+                    target_block = block
+                    break
+                elif self.block_name == "Screw" and block.name == "Screw":
+                    target_block = block
+                    break
+
+        if not target_block:
+            print(f"❌ Block {block_id} not found in pipeline_blocks")
+            QMessageBox.warning(self, "Save Failed", f"Block {block_id} not found.")
+            return False
+
+        # ===== 更新 block 数据 =====
+        if target_block.name == "Assembly":
+            target_block.assembly_data = new_config
+            target_block.config = new_config
+
+            total_steps = new_config.get("total_steps", 0)
+            if hasattr(target_block, "text"):
+                if total_steps > 0:
+                    target_block.text.setPlainText(f"Assembly (Block {target_block.block_id}, {total_steps} steps)")
+                else:
+                    target_block.text.setPlainText(f"Assembly (Block {target_block.block_id})")
+
+        elif target_block.name == "Screw":
+            target_block.config = new_config
+
+            screw_count = new_config.get("count", "")
+            screw_type = new_config.get("type", "")
+            if hasattr(target_block, "text"):
+                if screw_count and screw_type:
+                    target_block.text.setPlainText(
+                        f"Screw (Block {target_block.block_id}, {screw_count}x {screw_type})"
+                    )
+                else:
+                    target_block.text.setPlainText(f"Screw (Block {target_block.block_id})")
+
+        print(f"✅ Updated block object for block_id={block_id}")
+
+        # ===== 刷新 block 显示 =====
+        if hasattr(page, "update_assembly_block_displays"):
+            page.update_assembly_block_displays()
+
+        page.scene.update()
+        page.view.viewport().update()
+
+        # ===== 写回 pipeline_flow.json =====
+        try:
+            page.save_flow()
+            print("✅ pipeline_flow.json saved")
+        except Exception as e:
+            print(f"❌ Failed to save flow: {e}")
+            QMessageBox.warning(self, "Save Failed", f"Failed to save pipeline flow:\n{str(e)}")
+            return False
+
+        return True
+
     def on_assembly_dialog_finished(self, result, block_id):
         """Handle when AssemblyDialog is closed"""
         print(f"DEBUG: Assembly dialog finished with result: {result}")
-        print(f"DEBUG: Result type: {type(result)}")
-        print(f"DEBUG: QDialog.Accepted = {QDialog.Accepted}")
-        print(f"DEBUG: QDialog.Rejected = {QDialog.Rejected}")
 
         if result == QDialog.Accepted:
-            print("DEBUG: Dialog was accepted - getting configuration...")
+            new_config = None
 
-            # Get the updated configuration
-            new_config = self.assembly_dialog.get_all_selections()
-            print(f"DEBUG: New config type: {type(new_config)}")
-            print(f"DEBUG: New config content: {new_config}")
-
-            if isinstance(new_config, dict):
-                print(f"DEBUG: Saving configuration for block {block_id}")
-                self.save_configuration(block_id, new_config)
-                print("DEBUG: Configuration saved successfully")
+            if hasattr(self.assembly_dialog, "config_data") and isinstance(self.assembly_dialog.config_data, dict):
+                new_config = self.assembly_dialog.config_data
+            elif hasattr(self.assembly_dialog, "assembly_data") and isinstance(self.assembly_dialog.assembly_data,
+                                                                               dict):
+                new_config = self.assembly_dialog.assembly_data
             else:
-                print(f"❌ ERROR: new_config is {type(new_config)}, expected dict")
-        else:
-            print("DEBUG: Dialog was cancelled")
+                new_config = self.assembly_dialog.get_all_selections()
 
-        # Clean up
-        print("DEBUG: Cleaning up dialog reference")
-        self.assembly_dialog = None
-
-    def on_assembly_dialog_finished(self, result, block_id):
-        """Handle when AssemblyDialog is closed"""
-        print(f"DEBUG: Assembly dialog finished with result: {result}")
-
-        if result == QDialog.Accepted:
-            # Get the updated configuration
-            new_config = self.assembly_dialog.get_all_selections()
             print(f"DEBUG: New config type: {type(new_config)}")
+            print(f"DEBUG: New config value: {new_config}")
 
             if isinstance(new_config, dict):
                 self.save_configuration(block_id, new_config)
@@ -5480,7 +5759,6 @@ class ConfigurationOptionsDialog(QDialog):
         else:
             print("DEBUG: Dialog cancelled")
 
-        # Clean up
         self.assembly_dialog = None
 
     def get_current_assembly_config(self):
@@ -5532,6 +5810,12 @@ class ConfigurationOptionsDialog(QDialog):
         super().accept()
 
     @staticmethod
-    def get_action():
-        """Static method to show dialog and get result"""
-        return ConfigurationOptionsDialog.result
+    def get_action(block_name, current_config, assembly_data=None, parent=None):
+        dialog = ConfigurationOptionsDialog(
+            block_name=block_name,
+            current_config=current_config,
+            assembly_data=assembly_data,
+            parent=parent
+        )
+        dialog.exec()
+        return dialog.result

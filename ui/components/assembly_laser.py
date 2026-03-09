@@ -1,4 +1,6 @@
 import os
+import sys
+import glob
 import random
 import threading
 import socket
@@ -9,6 +11,7 @@ import cv2
 from datetime import datetime
 from PIL import Image
 from PySide6.QtWidgets import (
+    QApplication,
     QMainWindow, QWidget, QFileDialog,
     QVBoxLayout, QHBoxLayout,
     QComboBox, QPushButton,
@@ -117,7 +120,9 @@ class Calibration:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, parent=None, block_id=None, block_name=None):
+    def __init__(self, parent=None, block_id=None, block_name=None, mode="assembly"):
+        print(
+            f"DEBUG MainWindow __init__ -> self={id(self)}, block_id={block_id}, block_name={block_name}, mode={mode}")
         self.capture_folder = None
         super().__init__(parent)
 
@@ -130,29 +135,20 @@ class MainWindow(QMainWindow):
         # ===== RECIPE AND BLOCK INFORMATION =====
         self.block_id = block_id or "1"
         self.block_name = block_name or f"Block_{self.block_id}"
+        self.mode = mode or "assembly"
 
-        self.setWindowTitle(f"BMP Annotation Tool - {self.block_name}")
+        mode_text = "Screw" if self.mode == "screw" else "Assembly"
+        self.setWindowTitle(f"{mode_text} Annotation Tool - {self.block_name}")
         self.resize(1400, 900)
 
         # ===== RECIPE-BASED PATHS =====
-        self.base_path = "C://Users//PC_AI_DS//Pictures//LaserCalibration//calibration.json"
-
-        # Get recipe path
+        self.base_path = "C://Users//PC_AI_DS//Pictures//LaserCalibration"
         self.recipe_path = self.get_current_recipe_path()
 
-        # Define recipe-based paths
-        if self.recipe_path:
-            # Use paths within the current recipe
-            self.capture_image_path = os.path.join(self.recipe_path, "Capture")
-            self.labeling_path = os.path.join(self.recipe_path, "Labeling")
-            self.boxes_json_path = os.path.join(self.recipe_path, "BoxesData")
-            self.annotation_path = os.path.join(self.recipe_path, "Annotation")
-        else:
-            # Fallback to desktop paths if no recipe
-            self.capture_image_path = f"{self.base_path}\\Capture Image"
-            self.labeling_path = f"{self.base_path}\\Labeling"
-            self.boxes_json_path = f"{self.base_path}\\BoxesData"
-            self.annotation_path = f"{self.base_path}\\Annotation"
+        self.capture_image_path = self.get_capture_root_path()
+        self.labeling_path = self.get_labeling_root_path()
+        self.boxes_json_path = self.get_boxes_root_path()
+        self.annotation_path = self.get_annotation_root_path()
 
         # ===== BLOCK-SPECIFIC PATHS =====
         self.block_capture_path = os.path.join(self.capture_image_path, f"Block_{self.block_id}")
@@ -336,6 +332,66 @@ class MainWindow(QMainWindow):
             pass
         return "No recipe selected"
 
+    def get_capture_root_path(self):
+        """Get capture root path based on mode"""
+        if self.recipe_path:
+            if self.mode == "screw":
+                return os.path.join(self.recipe_path, "ScrewCapture")
+            elif self.mode == "screw2":
+                return os.path.join(self.recipe_path, "ScrewCapture2")
+            return os.path.join(self.recipe_path, "Capture")
+        else:
+            if self.mode == "screw":
+                return os.path.join(self.base_path, "ScrewCapture")
+            elif self.mode == "screw2":
+                return os.path.join(self.base_path, "ScrewCapture2")
+            return os.path.join(self.base_path, "Capture")
+
+    def get_labeling_root_path(self):
+        """Get labeling root path based on mode"""
+        if self.recipe_path:
+            if self.mode == "screw":
+                return os.path.join(self.recipe_path, "ScrewLabeling")
+            elif self.mode == "screw2":
+                return os.path.join(self.recipe_path, "ScrewLabeling2")
+            return os.path.join(self.recipe_path, "Labeling")
+        else:
+            if self.mode == "screw":
+                return os.path.join(self.base_path, "ScrewLabeling")
+            elif self.mode == "screw2":
+                return os.path.join(self.base_path, "ScrewLabeling2")
+            return os.path.join(self.base_path, "Labeling")
+
+    def get_boxes_root_path(self):
+        """Get boxes root path based on mode"""
+        if self.recipe_path:
+            if self.mode == "screw":
+                return os.path.join(self.recipe_path, "ScrewBoxesData")
+            elif self.mode == "screw2":
+                return os.path.join(self.recipe_path, "ScrewBoxesData2")
+            return os.path.join(self.recipe_path, "BoxesData")
+        else:
+            if self.mode == "screw":
+                return os.path.join(self.base_path, "ScrewBoxesData")
+            elif self.mode == "screw2":
+                return os.path.join(self.base_path, "ScrewBoxesData2")
+            return os.path.join(self.base_path, "BoxesData")
+
+    def get_annotation_root_path(self):
+        """Get annotation root path based on mode"""
+        if self.recipe_path:
+            if self.mode == "screw":
+                return os.path.join(self.recipe_path, "ScrewAnnotation")
+            elif self.mode == "screw2":
+                return os.path.join(self.recipe_path, "ScrewAnnotation2")
+            return os.path.join(self.recipe_path, "Annotation")
+        else:
+            if self.mode == "screw":
+                return os.path.join(self.base_path, "ScrewAnnotation")
+            elif self.mode == "screw2":
+                return os.path.join(self.base_path, "ScrewAnnotation2")
+            return os.path.join(self.base_path, "Annotation")
+
     def create_required_folders(self):
         """Create all required folders if they don't exist"""
         folders_to_create = [
@@ -405,7 +461,13 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        block_label = QLabel(f"🔲 Block: {self.block_name}")
+        if self.mode == "screw":
+            mode_text = "Screw"
+        elif self.mode == "screw2":
+            mode_text = "Screw 2"
+        else:
+            mode_text = "Assembly"
+        block_label = QLabel(f"🔲 {mode_text}: {self.block_name}")
         block_label.setStyleSheet("""
             QLabel {
                 font-size: 12px;
@@ -562,9 +624,13 @@ class MainWindow(QMainWindow):
         else:
             boxes_status = "❌ Not found"
 
-        block_layout.addRow("Capture Folder:", QLabel(capture_status))
-        block_layout.addRow("Annotation Folder:", QLabel(annotation_status))
-        block_layout.addRow("Boxes Folder:", QLabel(boxes_status))
+        capture_title = "Screw Capture Folder" if self.mode == "screw" else "Capture Folder"
+        annotation_title = "Screw Annotation Folder" if self.mode == "screw" else "Annotation Folder"
+        boxes_title = "Screw Boxes Folder" if self.mode == "screw" else "Boxes Folder"
+
+        block_layout.addRow(f"{capture_title}:", QLabel(capture_status))
+        block_layout.addRow(f"{annotation_title}:", QLabel(annotation_status))
+        block_layout.addRow(f"{boxes_title}:", QLabel(boxes_status))
 
         right_column.addWidget(block_info_group)
 
@@ -1066,8 +1132,14 @@ class MainWindow(QMainWindow):
             }
         """)
 
+        if self.mode == "screw":
+            mode_text = "Screw"
+        elif self.mode == "screw2":
+            mode_text = "Screw 2"
+        else:
+            mode_text = "Assembly"
         self.setWindowTitle(
-            f"BMP Annotation Tool – {self.block_name} – {os.path.basename(path)}"
+            f"{mode_text} Annotation Tool – {self.block_name} – {os.path.basename(path)}"
         )
 
         self.image_info_label.setText(f"{os.path.basename(path)}")
@@ -1111,11 +1183,6 @@ class MainWindow(QMainWindow):
         print("✅ MainWindow closed - Heartbeat Manager connection preserved")
         event.accept()
 
-
-import sys
-import glob
-from PySide6.QtWidgets import QApplication
-
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
@@ -1124,8 +1191,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--block_id', default='1')
     parser.add_argument('--block_name', default='Block_1')
+    parser.add_argument('--mode', default='assembly')
     args = parser.parse_args()
 
-    window = MainWindow(block_id=args.block_id, block_name=args.block_name)
+    window = MainWindow(
+        block_id=args.block_id,
+        block_name=args.block_name,
+        mode=args.mode
+    )
     window.show()
     sys.exit(app.exec())

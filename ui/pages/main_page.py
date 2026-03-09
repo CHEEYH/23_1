@@ -1,5 +1,6 @@
 # ui/pages/main_page.py
 import json
+import socket
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -8,14 +9,151 @@ import requests
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QMessageBox, QFrame, QGridLayout, QScrollArea,
-    QSizePolicy, QApplication
+    QSizePolicy, QApplication, QDialog, QTextEdit
 )
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QThread, Signal
 from PySide6.QtGui import QFont, QPalette, QColor
 
 from config_manager import config_manager
 from ui.components.pipeline_runner import PipelineRunner
 from ui.components.mes_client import MESClient
+
+
+class QRCheckWorker(QThread):
+    message_received = Signal(str)
+    status_changed = Signal(str)
+    error_occurred = Signal(str)
+    finished_scan = Signal()
+
+    def __init__(self, host="127.0.0.1", port=1220, parent=None):
+        super().__init__(parent)
+        self.host = host
+        self.port = port
+        self.running = True
+        self.sock = None
+
+    def run(self):
+        try:
+            self.status_changed.emit(f"Connecting to {self.host}:{self.port} ...")
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(5)
+            self.sock.connect((self.host, self.port))
+
+            self.status_changed.emit("Connected, sending check ...")
+            self.sock.sendall(b"check\n")
+
+            self.sock.settimeout(0.2)
+
+            while self.running:
+                try:
+                    data = self.sock.recv(1024)
+                    if not data:
+                        break
+
+                    text = data.decode("utf-8", errors="ignore").strip()
+                    if text:
+                        self.message_received.emit(text)
+
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    self.error_occurred.emit(f"Socket read failed: {e}")
+                    break
+
+        except Exception as e:
+            self.error_occurred.emit(f"Connection failed: {e}")
+
+        finally:
+            self.cleanup()
+            self.finished_scan.emit()
+
+    def stop_scan(self):
+        self.running = False
+        try:
+            if self.sock:
+                self.sock.sendall(b"ok\n")
+        except:
+            pass
+
+    def cleanup(self):
+        try:
+            if self.sock:
+                self.sock.close()
+        except:
+            pass
+        self.sock = None
+
+
+class QRScanDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("QR Check")
+        self.setMinimumSize(520, 320)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        self.title_label = QLabel("Please scan the QR Code")
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #0f172a;")
+        layout.addWidget(self.title_label)
+
+        self.status_label = QLabel("Waiting to start...")
+        self.status_label.setStyleSheet("color: #475569; font-size: 12px;")
+        layout.addWidget(self.status_label)
+
+        self.result_box = QTextEdit()
+        self.result_box.setReadOnly(True)
+        self.result_box.setPlaceholderText("Scanner return messages will be shown here...")
+        self.result_box.setStyleSheet("""
+            QTextEdit {
+                background-color: white;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                padding: 8px;
+                font-size: 12px;
+            }
+        """)
+        layout.addWidget(self.result_box)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        self.confirm_btn = QPushButton("Confirm")
+        self.confirm_btn.setFixedHeight(34)
+        self.confirm_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #10b981;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 6px 18px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+            }
+        """)
+        button_layout.addWidget(self.confirm_btn)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setFixedHeight(34)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ef4444;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 6px 18px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #dc2626;
+            }
+        """)
+        button_layout.addWidget(self.cancel_btn)
+
+        layout.addLayout(button_layout)
 
 
 class MainPage(QWidget):
@@ -25,28 +163,35 @@ class MainPage(QWidget):
         self.mes = MESClient()
         self.pending_jobs = []
         self.current_recipe = None
-        self.current_job_title = None  # Add this
-        self.current_job_details = None  # Add this
-        self.mes_recipe_override = False  # Track if MES is controlling recipe
-        self.waiting_for_mes = True  # Start in waiting mode
+        self.current_job_title = None
+        self.current_job_details = None
+        self.mes_recipe_override = False
+        self.waiting_for_mes = True
         self.last_valid_mes_time = None
         self.mes_outage_start = None
+        self.pipeline_running = False
 
-        # Initialize timers first
+        self.has_active_mes_job = False
+
+        self.qr_worker = None
+        self.qr_dialog = None
+        self.last_qr_job_id = None
+        self.qr_check_passed = False
+        self.qr_result_ok = False
+
         self.time_timer = QTimer()
-        # self.inventory_timer = QTimer()
         self.mes_recipe_timer = QTimer()
         self.spinner_timer = QTimer()
 
         self.init_ui()
         self.init_timers()
+        self.start_spinner()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        # ================== Header with Gradient ==================
         header_container = QFrame()
         header_container.setFixedHeight(70)
         header_container.setStyleSheet("""
@@ -74,7 +219,6 @@ class MainPage(QWidget):
         header_layout.addWidget(header)
         layout.addWidget(header_container)
 
-        # ================== Status Bar ==================
         status_frame = QFrame()
         status_frame.setFixedHeight(45)
         status_frame.setStyleSheet("""
@@ -89,9 +233,8 @@ class MainPage(QWidget):
         status_layout.setContentsMargins(12, 4, 12, 4)
         status_layout.setSpacing(8)
 
-        # Machine status with indicator
         self.status_indicator = QLabel("●")
-        self.status_indicator.setStyleSheet("color: #f59e0b; font-size: 16px;")  # Default yellow
+        self.status_indicator.setStyleSheet("color: #f59e0b; font-size: 16px;")
 
         self.machine_status = QLabel("WAITING FOR MES...")
         self.machine_status.setFont(QFont("Inter", 11, QFont.Bold))
@@ -101,7 +244,6 @@ class MainPage(QWidget):
         status_layout.addWidget(self.machine_status)
         status_layout.addStretch()
 
-        # MES Connection Status
         self.mes_status_label = QLabel("🔌 MES: Waiting for recipe...")
         self.mes_status_label.setFont(QFont("Inter", 10))
         self.mes_status_label.setStyleSheet("""
@@ -115,7 +257,6 @@ class MainPage(QWidget):
         """)
         status_layout.addWidget(self.mes_status_label)
 
-        # Time display
         clock_icon = QLabel("🕐")
         clock_icon.setStyleSheet("font-size: 14px; color: #64748b;")
 
@@ -128,7 +269,6 @@ class MainPage(QWidget):
 
         layout.addWidget(status_frame)
 
-        # ================== MES Waiting Indicator ==================
         self.waiting_card = QFrame()
         self.waiting_card.setFixedHeight(250)
         self.waiting_card.setStyleSheet("""
@@ -143,31 +283,12 @@ class MainPage(QWidget):
         waiting_layout.setSpacing(15)
         waiting_layout.setAlignment(Qt.AlignCenter)
 
-        # # Waiting icon
-        # waiting_icon = QLabel("⏳")
-        # waiting_icon.setStyleSheet("font-size: 48px; color: #f59e0b;")
-        # waiting_icon.setAlignment(Qt.AlignCenter)
-        # waiting_layout.addWidget(waiting_icon)
-
-        # Waiting message
         self.waiting_title = QLabel("Waiting for MES Recipe")
         self.waiting_title.setFont(QFont("Inter", 16, QFont.Bold))
         self.waiting_title.setStyleSheet("color: #92400e;")
         self.waiting_title.setAlignment(Qt.AlignCenter)
         waiting_layout.addWidget(self.waiting_title)
 
-        # self.waiting_message = QLabel(
-        #     "System is waiting for recipe from MES.\n"
-        #     "Manual recipe selection is disabled.\n\n"
-        #     "The system will automatically enable when a valid recipe is received."
-        # )
-        # self.waiting_message.setFont(QFont("Inter", 12))
-        # self.waiting_message.setStyleSheet("color: #b45309; line-height: 1.6;")
-        # self.waiting_message.setAlignment(Qt.AlignCenter)
-        # self.waiting_message.setWordWrap(True)
-        # waiting_layout.addWidget(self.waiting_message)
-
-        # Spinner animation placeholder
         self.spinner_label = QLabel("● ○ ○")
         self.spinner_label.setFont(QFont("Inter", 14))
         self.spinner_label.setStyleSheet("color: #f59e0b;")
@@ -176,10 +297,9 @@ class MainPage(QWidget):
 
         layout.addWidget(self.waiting_card)
 
-        # ================== Recipe Selection Card (Hidden initially) ==================
         self.recipe_card = QFrame()
         self.recipe_card.setFixedHeight(200)
-        self.recipe_card.setVisible(False)  # Hidden until MES recipe is received
+        self.recipe_card.setVisible(False)
         self.recipe_card.setStyleSheet("""
             QFrame {
                 background-color: white;
@@ -193,7 +313,6 @@ class MainPage(QWidget):
         recipe_layout.setSpacing(8)
         recipe_layout.setContentsMargins(12, 12, 12, 12)
 
-        # Recipe header with MES indicator
         recipe_header_layout = QHBoxLayout()
         recipe_header_layout.setSpacing(4)
 
@@ -206,32 +325,15 @@ class MainPage(QWidget):
 
         recipe_header_layout.addWidget(recipe_icon)
         recipe_header_layout.addWidget(recipe_header)
-
-        # # MES Auto Mode Indicator
-        # self.mes_mode_indicator = QLabel("⚡ MES Auto")
-        # self.mes_mode_indicator.setStyleSheet("""
-        #     QLabel {
-        #         color: #059669;
-        #         background-color: #d1fae5;
-        #         padding: 4px 10px;
-        #         border-radius: 12px;
-        #         font-size: 11px;
-        #         font-weight: bold;
-        #         margin-left: 10px;
-        #     }
-        # """)
-        # recipe_header_layout.addWidget(self.mes_mode_indicator)
-
         recipe_header_layout.addStretch()
         recipe_layout.addLayout(recipe_header_layout)
 
-        # Recipe selection row
         selection_layout = QHBoxLayout()
         selection_layout.setSpacing(8)
 
         self.recipe_combo = QComboBox()
         self.recipe_combo.setFixedHeight(36)
-        self.recipe_combo.setEnabled(False)  # Disabled by default (MES controlled)
+        self.recipe_combo.setEnabled(False)
         self.recipe_combo.setStyleSheet("""
             QComboBox {
                 font-size: 12px;
@@ -267,7 +369,6 @@ class MainPage(QWidget):
             QComboBox::down-arrow {
                 width: 10px;
                 height: 10px;
-                image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM0NzU1NjkiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWxpbmUgcG9pbnRzPSI2IDkgMTIgMTUgMTggOSI+PC9wb2x5bGluZT48L3N2Zz4=);
             }
             QComboBox QListView {
                 font-size: 12px;
@@ -282,18 +383,13 @@ class MainPage(QWidget):
                 border-radius: 4px;
                 color: #0f172a;
             }
-            # QComboBox QListView::item:selected {
-            #     background-color: #3b82f6;
-            #     color: white;
-            # }
         """)
         self.recipe_combo.currentTextChanged.connect(self.on_recipe_changed)
         selection_layout.addWidget(self.recipe_combo)
 
-        # Refresh button (hidden when in MES auto mode)
         self.refresh_btn = QPushButton("↻")
         self.refresh_btn.setFixedSize(36, 36)
-        self.refresh_btn.setEnabled(False)  # Disabled by default
+        self.refresh_btn.setEnabled(False)
         self.refresh_btn.setStyleSheet("""
             QPushButton {
                 background-color: #f1f5f9;
@@ -324,23 +420,6 @@ class MainPage(QWidget):
         selection_layout.addStretch()
         recipe_layout.addLayout(selection_layout)
 
-        # # MES Recipe Override Info (shows when MES is controlling)
-        # self.mes_recipe_info = QLabel("")
-        # self.mes_recipe_info.setFont(QFont("Inter", 10))
-        # self.mes_recipe_info.setStyleSheet("""
-        #     QLabel {
-        #         color: #047857;
-        #         background: #ecfdf5;
-        #         padding: 6px;
-        #         border-radius: 6px;
-        #         border: 1px solid #a7f3d0;
-        #         margin-top: 4px;
-        #     }
-        # """)
-        # self.mes_recipe_info.setWordWrap(True)
-        # recipe_layout.addWidget(self.mes_recipe_info)
-
-        # Pipeline info (smaller)
         self.pipeline_info_label = QLabel("Waiting for MES recipe...")
         self.pipeline_info_label.setFont(QFont("Inter", 11))
         self.pipeline_info_label.setStyleSheet("""
@@ -358,7 +437,6 @@ class MainPage(QWidget):
 
         layout.addWidget(self.recipe_card)
 
-        # ================== Pending Jobs Panel (Smaller) ==================
         pending_card = QFrame()
         pending_card.setFixedHeight(350)
         pending_card.setStyleSheet("""
@@ -373,7 +451,6 @@ class MainPage(QWidget):
         pending_layout.setSpacing(4)
         pending_layout.setContentsMargins(8, 8, 8, 4)
 
-        # Pending header
         pending_header = QHBoxLayout()
         pending_header.setSpacing(5)
 
@@ -402,7 +479,6 @@ class MainPage(QWidget):
 
         pending_layout.addLayout(pending_header)
 
-        # Pending jobs list with scroll (smaller)
         scroll_container = QFrame()
         scroll_container.setStyleSheet("""
             QFrame {
@@ -449,13 +525,11 @@ class MainPage(QWidget):
 
         layout.addWidget(pending_card)
 
-        # ================== Quick Actions (Smaller buttons) ==================
         actions_label = QLabel("Quick Actions")
         actions_label.setFont(QFont("Inter", 14, QFont.Bold))
         actions_label.setStyleSheet("color: #0f172a; margin-top: 4px;")
         layout.addWidget(actions_label)
 
-        # Action buttons grid
         actions_grid = QGridLayout()
         actions_grid.setSpacing(10)
 
@@ -470,7 +544,6 @@ class MainPage(QWidget):
             btn.setFont(QFont("Inter", 12, QFont.Bold))
             btn.setToolTip(tooltip)
 
-            # Disable run button initially
             if text == "▶ Run Pipeline":
                 self.run_button = btn
                 btn.setEnabled(False)
@@ -499,39 +572,22 @@ class MainPage(QWidget):
             actions_grid.addWidget(btn, 0, i)
 
         layout.addLayout(actions_grid)
-
         layout.addStretch()
 
-        # Initial refresh (will be in waiting mode)
         self.refresh_recipes()
         self.load_pending_jobs()
 
-        # Start timers and polling
-        self.init_timers()
-        self.start_mes_recipe_polling()
-        self.start_spinner()
-
     def init_timers(self):
-        """Initialize timers for updates"""
-        # Time update timer
-        self.spinner_timer = QTimer()
         self.time_timer.timeout.connect(self.update_time)
         self.time_timer.start(300)
 
-        # Inventory check timer
-        # self.inventory_timer.timeout.connect(self.check_inventory)
-        # self.inventory_timer.start(30000)
-
-        # MES recipe polling timer
-        self.mes_recipe_timer.timeout.connect(self.poll_mes_recipe)
-        self.mes_recipe_timer.start(5000)  # Poll every 5 seconds
-
-        # Spinner animation timer
         self.spinner_timer.timeout.connect(self.animate_spinner)
         self.spinner_timer.start(500)
 
+        self.mes_recipe_timer.timeout.connect(self.try_fetch_mes_recipe)
+        self.mes_recipe_timer.start(5000)
+
     def animate_spinner(self):
-        """Animate the waiting spinner"""
         if not self.waiting_for_mes:
             return
 
@@ -541,16 +597,11 @@ class MainPage(QWidget):
         self._spinner_frame = (current + 1) % len(frames)
 
     def start_spinner(self):
-        """Start spinner animation"""
         self._spinner_frame = 0
         self.waiting_for_mes = True
-        # Timer already started in init_timers
 
-    def poll_mes_recipe(self):
-        """Poll MES API with cooldown to prevent flickering"""
+    def fetch_mes_recipe_once(self, force=False):
         try:
-            had_valid_recipe = not self.waiting_for_mes and self.current_recipe is not None
-
             job_details = self.mes.get_job_details()
             print(f"DEBUG job_details from MES: {job_details}")
 
@@ -559,47 +610,47 @@ class MainPage(QWidget):
                 mes_recipe = (job_details.get('recipe') or job_details.get('recipeName') or "").strip()
 
             if job_details and mes_recipe:
-                self.last_valid_mes_time = datetime.now()
-                self.mes_outage_start = None
-
                 available_recipes = config_manager.get_available_recipes()
                 print(f"DEBUG MES recipe received: [{mes_recipe}]")
                 print(f"DEBUG Available recipes: {available_recipes}")
 
                 if mes_recipe in available_recipes:
+                    new_job_title = job_details.get('title') or job_details.get('workOrder') or 'Unknown'
+                    print(f"🔄 Refreshing MES job: Recipe={mes_recipe}, Job={new_job_title}")
+
                     self.force_ui_update(mes_recipe, job_details)
+                    self.has_active_mes_job = True
                 else:
                     print(f"⚠️ Recipe '{mes_recipe}' not found in local recipes")
             else:
-                if self.last_valid_mes_time:
-                    outage_duration = (datetime.now() - self.last_valid_mes_time).total_seconds()
-
-                    if outage_duration > 30 and not had_valid_recipe:
-                        print(f"⚠️ MES outage for {outage_duration:.0f}s - going to waiting")
-                        self.handle_mes_disconnect()
-                    else:
-                        print(f"⏳ MES temporary outage ({outage_duration:.0f}s) - keeping current state")
-                elif not had_valid_recipe:
-                    self.handle_mes_disconnect()
+                print("⚠️ MES did not return a valid job/recipe")
+                self.has_active_mes_job = False
 
         except Exception as e:
             print(f"❌ MES error: {e}")
             import traceback
             traceback.print_exc()
 
-    def force_ui_update(self, recipe_name, job_details):
-        """Force UI to update with new recipe and job details"""
+    def try_fetch_mes_recipe(self):
+        if self.pipeline_running:
+            print("⏭️ Pipeline is running, skip MES refresh")
+            return
 
+        self.fetch_mes_recipe_once()
+
+    def force_ui_update(self, recipe_name, job_details):
         job_title = job_details.get('title') or job_details.get('workOrder') or 'Unknown'
         print(f"🔄 FORCE UI UPDATE: Recipe={recipe_name}, Job={job_title}")
 
         self.current_recipe = recipe_name
-        config_manager.set_current_recipe(recipe_name)
+        if config_manager.current_recipe != recipe_name:
+            config_manager.set_current_recipe(recipe_name)
 
         self.current_job_details = job_details
         self.current_job_title = job_title
         self.waiting_for_mes = False
         self.mes_recipe_override = True
+        self.has_active_mes_job = True
 
         self.waiting_card.setVisible(False)
         self.recipe_card.setVisible(True)
@@ -613,8 +664,6 @@ class MainPage(QWidget):
             self.recipe_combo.blockSignals(True)
             self.recipe_combo.setCurrentIndex(index)
             self.recipe_combo.blockSignals(False)
-
-        pending_count = len(job_details.get('pending', []))
 
         new_status = f"READY - Recipe: {recipe_name} | Job: {job_title}"
         print(f"📝 Setting status to: {new_status}")
@@ -638,10 +687,22 @@ class MainPage(QWidget):
         self.status_indicator.setStyleSheet("color: #10b981; font-size: 16px;")
 
         if hasattr(self, 'run_button'):
-            self.run_button.setEnabled(True)
+            self.run_button.setEnabled(False)
 
         self.update_pipeline_info()
         self.load_pending_jobs()
+
+        job_id = job_details.get('title') or job_details.get('workOrder') or 'Unknown'
+
+        if self.last_qr_job_id != job_id:
+            self.last_qr_job_id = job_id
+            self.qr_check_passed = False
+            self.qr_result_ok = False
+
+            if hasattr(self, 'run_button'):
+                self.run_button.setEnabled(False)
+
+            self.show_qr_check_popup()
 
         self.machine_status.repaint()
         self.mes_status_label.repaint()
@@ -654,52 +715,140 @@ class MainPage(QWidget):
         print(f"✅ UI Updated - Current status text: {self.machine_status.text()}")
         print(f"✅ Config current recipe: {config_manager.current_recipe}")
 
-    # def get_job_details(self) -> Dict:
-    #     """
-    #     Get currently running job details from MES API.
-    #     Endpoint: /api/GetPartNumberDetail/running
-    #
-    #     Returns dict with job details including:
-    #     - title: Job ID/Title
-    #     - recipeName: Recipe to use
-    #     - projectHeaderID: Project identifier
-    #     - pending: List of pending parts
-    #     - itemID: Item ID
-    #     - station: Current station
-    #     """
-    #     try:
-    #         response = requests.get(
-    #             f"{self.base_url}/GetPartNumberDetail/running",
-    #             timeout=self.timeout
-    #         )
-    #
-    #         if response.status_code == 200:
-    #             data = response.json()
-    #             print(f"✅ Got running job data: {data}")
-    #             return data
-    #         else:
-    #             print(f"⚠️ Failed to get running job: {response.status_code}")
-    #             if response.text:
-    #                 print(f"   Response: {response.text}")
-    #
-    #     except Exception as e:
-    #         print(f"❌ Error getting running job: {e}")
-    #         import traceback
-    #         traceback.print_exc()
-    #
-    #     return {}
+    def show_qr_check_popup(self):
+        """Show QR check dialog and start TCP check"""
+        if self.qr_dialog and self.qr_dialog.isVisible():
+            return
+
+        self.qr_result_ok = False
+
+        self.qr_dialog = QRScanDialog(self)
+        self.qr_dialog.status_label.setText("Waiting for QR scan...")
+        self.qr_dialog.confirm_btn.setEnabled(False)
+
+        self.qr_dialog.confirm_btn.clicked.connect(self.confirm_qr_scan)
+        self.qr_dialog.cancel_btn.clicked.connect(self.cancel_qr_scan)
+
+        self.qr_worker = QRCheckWorker(host="127.0.0.1", port=1220, parent=self)
+        self.qr_worker.status_changed.connect(self.on_qr_status_changed)
+        self.qr_worker.message_received.connect(self.on_qr_message_received)
+        self.qr_worker.error_occurred.connect(self.on_qr_error)
+        self.qr_worker.finished_scan.connect(self.on_qr_finished)
+        self.qr_worker.start()
+
+        self.qr_dialog.exec()
+
+    def on_qr_status_changed(self, text):
+        if self.qr_dialog:
+            self.qr_dialog.status_label.setText(text)
+
+    def on_qr_message_received(self, text):
+        if self.qr_dialog:
+            clean_text = text.strip()
+            if not clean_text:
+                return
+
+            # Any scanned content is accepted
+            self.qr_result_ok = True
+
+            self.qr_dialog.status_label.setText("QR data received")
+            self.qr_dialog.status_label.setStyleSheet(
+                "color: #059669; font-weight: bold; font-size: 12px;"
+            )
+            self.qr_dialog.confirm_btn.setEnabled(True)
+
+            self.qr_dialog.result_box.append(clean_text)
+
+    def on_qr_error(self, text):
+        if self.qr_dialog:
+            self.qr_dialog.status_label.setText("An error occurred")
+            self.qr_dialog.status_label.setStyleSheet("color: #dc2626; font-weight: bold; font-size: 12px;")
+            self.qr_dialog.result_box.append(f"[ERROR] {text}")
+
+    def on_qr_finished(self):
+        if self.qr_dialog:
+            current = self.qr_dialog.status_label.text()
+            if current not in ["QR data received", "An error occurred"]:
+                self.qr_dialog.status_label.setText("Scan stopped")
+
+    def confirm_qr_scan(self):
+        """User confirms QR result"""
+        if not self.qr_result_ok:
+            QMessageBox.warning(
+                self,
+                "No QR Data",
+                "No QR data received yet. Please scan first.",
+                QMessageBox.Ok
+            )
+            return
+
+        self.qr_check_passed = True
+
+        if self.qr_dialog:
+            self.qr_dialog.accept()
+            self.qr_dialog.deleteLater()
+            self.qr_dialog = None
+
+        if hasattr(self, 'run_button'):
+            self.run_button.setEnabled(True)
+
+        if self.current_recipe and self.current_job_title:
+            self.machine_status.setText(
+                f"READY - Recipe: {self.current_recipe} | Job: {self.current_job_title}"
+            )
+        else:
+            self.machine_status.setText("READY")
+
+        QApplication.processEvents()
+
+        if self.qr_worker:
+            self.qr_worker.stop_scan()
+            self.qr_worker.quit()
+            self.qr_worker.wait(300)
+            self.qr_worker.deleteLater()
+            self.qr_worker = None
+
+    def cancel_qr_scan(self):
+        self.qr_check_passed = False
+        self.qr_result_ok = False
+
+        if self.qr_dialog:
+            self.qr_dialog.reject()
+            self.qr_dialog.deleteLater()
+            self.qr_dialog = None
+
+        if hasattr(self, 'run_button'):
+            self.run_button.setEnabled(False)
+
+        if self.qr_worker:
+            self.qr_worker.stop_scan()
+            self.qr_worker.wait(500)
+            self.qr_worker.deleteLater()
+            self.qr_worker = None
+
+        QApplication.processEvents()
+
+        # QMessageBox.warning(
+        #     self,
+        #     "QR Check Incomplete",
+        #     "QR check was cancelled. Run Pipeline cannot be executed until the QR check is completed.",
+        #     QMessageBox.Ok
+        # )
+
+        # 关键：让同一个 job 下次也会重新弹 QR
+        self.has_active_mes_job = False
+        self.last_qr_job_id = None
+
+        QTimer.singleShot(200, lambda: self.fetch_mes_recipe_once(force=True))
 
     def enable_mes_recipe_mode(self, recipe_name, job_details=None):
-        """Enable MES-controlled recipe selection with job details"""
         self.force_ui_update(recipe_name, job_details)
 
-        # Add debug timer to monitor status changes
         self.debug_timer = QTimer()
         self.debug_timer.timeout.connect(self.debug_status)
-        self.debug_timer.start(2000)  # Check every 2 seconds
+        self.debug_timer.start(2000)
 
     def debug_status(self):
-        """Debug method to monitor status changes"""
         if hasattr(self, 'machine_status'):
             current_text = self.machine_status.text()
             current_job = getattr(self, 'current_job_title', 'None')
@@ -708,14 +857,11 @@ class MainPage(QWidget):
             print(f"🔍 DEBUG - UI shows: '{current_text}'")
             print(f"🔍 DEBUG - Internal: Recipe={current_recipe}, Job={current_job}")
 
-            # Check if they match
             expected = f"READY - Recipe: {current_recipe} | Job: {current_job}"
             if current_text != expected and not current_text.startswith("RECIPE NOT FOUND"):
                 print(f"⚠️ UI MISMATCH! Expected: '{expected}'")
 
     def handle_mes_disconnect(self):
-        """Handle MES disconnection - only if we never had a valid recipe"""
-        # DON'T disconnect if we already have a valid recipe
         if self.current_recipe and not self.waiting_for_mes:
             print(f"✅ Already have recipe {self.current_recipe}, ignoring MES disconnect")
             return
@@ -725,36 +871,30 @@ class MainPage(QWidget):
         self.current_recipe = None
         config_manager.current_recipe = None
 
-        # Hide recipe card, show waiting card
         self.waiting_card.setVisible(True)
         self.recipe_card.setVisible(False)
+        self.current_job_title = None
+        self.current_job_details = None
+        self.qr_check_passed = False
+        self.qr_result_ok = False
+        self.last_qr_job_id = None
+        self.has_active_mes_job = False
 
-        # Update messages
         self.waiting_title.setText("Waiting for MES Recipe")
 
-        # Disable run button
         if hasattr(self, 'run_button'):
             self.run_button.setEnabled(False)
 
-        # Reset status
         self.machine_status.setText("WAITING FOR MES...")
         self.machine_status.setStyleSheet("color: #b45309;")
         self.status_indicator.setStyleSheet("color: #f59e0b; font-size: 16px;")
 
-        # Force UI refresh
         QApplication.processEvents()
 
-    def start_mes_recipe_polling(self):
-        """Start polling MES for recipe updates"""
-        # Initial poll
-        self.poll_mes_recipe()
-
     def update_time(self):
-        """Update time display"""
         self.time_label.setText(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     def darken_color(self, color, factor=0.7):
-        """Simple color darkening for hover effects"""
         colors = {
             "#10b981": "#059669",
             "#f97316": "#ea580c",
@@ -764,8 +904,6 @@ class MainPage(QWidget):
         return colors.get(color, color)
 
     def refresh_recipes(self):
-        """Refresh recipes list."""
-        # Only refresh if we have MES control
         if not self.mes_recipe_override:
             return
 
@@ -779,7 +917,6 @@ class MainPage(QWidget):
         for recipe in recipes:
             self.recipe_combo.addItem(f"📦 {recipe}")
 
-        # Try to restore previous selection
         if current_text in [f"📦 {r}" for r in recipes]:
             self.recipe_combo.setCurrentText(current_text)
         elif config_manager.current_recipe:
@@ -791,13 +928,10 @@ class MainPage(QWidget):
         self.update_pipeline_info()
 
     def on_recipe_changed(self, recipe_name):
-        """Handle recipe selection change."""
-        # Ignore if not in MES mode
         if not self.mes_recipe_override:
             return
 
         if recipe_name and recipe_name != "✨ Select a Recipe":
-            # Remove the emoji prefix
             clean_name = recipe_name.replace("📦 ", "")
             config_manager.set_current_recipe(clean_name)
             self.current_recipe = clean_name
@@ -813,7 +947,6 @@ class MainPage(QWidget):
             self.machine_status.setText("READY (MES Auto - No Recipe)")
 
     def update_pipeline_info(self):
-        """Update pipeline information display."""
         if self.waiting_for_mes:
             self.pipeline_info_label.setText("Waiting for MES recipe...")
             return
@@ -824,7 +957,6 @@ class MainPage(QWidget):
             self.pipeline_info_label.setText("✨ Select a recipe to view details")
             return
 
-        # Remove emoji prefix for actual recipe name
         clean_name = recipe_name.replace("📦 ", "")
         summary = PipelineRunner.get_pipeline_summary(clean_name)
 
@@ -841,7 +973,6 @@ class MainPage(QWidget):
         self.pipeline_info_label.setText(info_text)
 
     def load_pending_jobs(self):
-        """Load pending jobs for current recipe"""
         if not self.current_recipe or self.waiting_for_mes:
             self.pending_jobs = []
             self.update_pending_display()
@@ -851,8 +982,6 @@ class MainPage(QWidget):
         self.update_pending_display()
 
     def update_pending_display(self):
-        """Update pending jobs list"""
-        # Clear existing items (keep stretch at end)
         while self.pending_layout.count() > 1:
             child = self.pending_layout.takeAt(0)
             if child.widget():
@@ -880,14 +1009,12 @@ class MainPage(QWidget):
             self.pending_count.setText("0")
             return
 
-        # Add pending jobs
         for job in self.pending_jobs:
             self.pending_layout.insertWidget(self.pending_layout.count() - 1, self.create_job_widget(job))
 
         self.pending_count.setText(str(len(self.pending_jobs)))
 
     def create_job_widget(self, job):
-        """Create compact widget for pending job"""
         widget = QFrame()
         widget.setFixedHeight(48)
         widget.setStyleSheet("""
@@ -905,34 +1032,29 @@ class MainPage(QWidget):
         layout.setContentsMargins(8, 4, 4, 4)
         layout.setSpacing(4)
 
-        # Job icon based on source
         job_id = job.get('job_id', 'Unknown')
         mes_details = job.get('mes_job_details', {})
         title = mes_details.get('title', job_id)
 
-        # Show different icon for MES-sourced jobs
         if mes_details:
-            job_icon = QLabel("🏭")  # Factory icon for MES jobs
+            job_icon = QLabel("🏭")
             job_icon.setToolTip(f"MES Job: {title}")
         else:
-            job_icon = QLabel("📋")  # Document icon for local jobs
+            job_icon = QLabel("📋")
 
         job_icon.setStyleSheet("font-size: 14px;")
         layout.addWidget(job_icon)
 
-        # Job info - show title if available
         display_id = title[:10] if len(title) > 10 else title
 
         completed = len(job.get('completed_steps', []))
         total = job.get('total_steps', 0)
         skipped = len(job.get('skipped_steps', []))
 
-        # Add additional info from MES if available
         info_text = f"<b>{display_id}</b> • {completed}/{total}"
         if skipped:
             info_text += f" ⏸{skipped}"
 
-        # Add product code if available
         if mes_details.get('product_code'):
             info_text += f" <span style='color:#6b7280;'>({mes_details['product_code']})</span>"
 
@@ -942,31 +1064,9 @@ class MainPage(QWidget):
         layout.addWidget(info_label)
 
         layout.addStretch()
-
-        # # Continue button
-        # continue_btn = QPushButton("▶")
-        # continue_btn.setFixedSize(28, 24)
-        # continue_btn.setFont(QFont("Inter", 9, QFont.Bold))
-        # continue_btn.setStyleSheet("""
-        #     QPushButton {
-        #         background-color: #f59e0b;
-        #         color: white;
-        #         border-radius: 4px;
-        #         padding: 2px 6px;
-        #         border: none;
-        #     }
-        #     QPushButton:hover {
-        #         background-color: #d97706;
-        #     }
-        # """)
-        # continue_btn.setToolTip("Continue this job")
-        # continue_btn.clicked.connect(lambda: self.continue_job(job))
-        # layout.addWidget(continue_btn)
-
         return widget
 
     def continue_job(self, job):
-        """Continue a pending job - automatically without asking"""
         if self.waiting_for_mes:
             QMessageBox.warning(
                 self,
@@ -982,57 +1082,50 @@ class MainPage(QWidget):
                 skipped_steps.append(s.get('step'))
 
         if not skipped_steps:
-            # No skipped steps - job might be complete, just remove it
             print(f"✅ Job {job.get('job_id', '')} has no skipped steps - removing from pending")
             self.remove_from_pending(job)
             return
 
-        # Auto-continue without asking
+        self.pipeline_running = True
+
         print(f"🔄 Auto-continuing job {job.get('job_id', '')} with {len(skipped_steps)} skipped steps")
 
-        # Update status
         self.machine_status.setText(f"▶ Continuing Job {job.get('job_id', '')[:8]}...")
         self.machine_status.repaint()
         QApplication.processEvents()
 
-        # Execute continuation
-        success = PipelineRunner.continue_skipped_steps(
-            self.current_recipe,
-            job,
-            self,
-            pending_callback=lambda j: self.save_pending(self.current_recipe, j)
-        )
+        try:
+            success = PipelineRunner.continue_skipped_steps(
+                self.current_recipe,
+                job,
+                self,
+                pending_callback=lambda j: self.save_pending(self.current_recipe, j)
+            )
+        finally:
+            self.pipeline_running = False
 
         if success:
             self.machine_status.setText("READY (MES Auto)")
             print(f"✅ Job continuation completed successfully")
+            self.has_active_mes_job = False
+            self.qr_check_passed = False
+            self.qr_result_ok = False
+            self.last_qr_job_id = None
+            self.try_fetch_mes_recipe()
         else:
             self.machine_status.setText("PAUSED")
             print(f"⚠️ Job continuation paused")
 
-        # Refresh pending jobs list
         self.load_pending_jobs()
 
     def remove_from_pending(self, job):
-        """Remove a completed job from pending list"""
         job_id = job.get('job_id')
         self.pending_jobs = [j for j in self.pending_jobs if j.get('job_id') != job_id]
 
-        # Update pending jobs file
-        PipelineRunner.save_pending_job(self.current_recipe, None)  # This will rewrite with removed job
-
-        # Update display
+        PipelineRunner.remove_pending_job(self.current_recipe, job_id)
         self.update_pending_display()
 
-    # def check_inventory(self):
-    #     """Check inventory in background (no display)"""
-    #     try:
-    #         self.mes.get_inventory(['A', 'B', 'C'])
-    #     except:
-    #         pass
-
     def get_inventory(self) -> Dict[str, int]:
-        """Get current inventory for display purposes only"""
         try:
             if hasattr(PipelineRunner, '_api_client') and PipelineRunner._api_client:
                 inventory = PipelineRunner._api_client.get_all_inventory()
@@ -1044,38 +1137,44 @@ class MainPage(QWidget):
             return {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'E': 0, 'F': 0, 'G': 0, 'H': 0}
 
     def save_pending(self, recipe: str, job: Dict):
-        """Save pending job - called from pipeline_runner"""
         PipelineRunner.save_pending_job(recipe, job)
 
     def run_pipeline(self):
-        """Run pipeline from main page - posts UIDs immediately when clicked"""
-        # Check if we're in waiting mode
+
         if self.waiting_for_mes:
             QMessageBox.warning(
                 self,
                 "⚠️ System Waiting",
-                "System is waiting for a recipe from MES.\n\n"
-                "Please wait until a valid recipe is received.",
+                "System is waiting for a recipe from MES.\n\nPlease wait until a valid recipe is received.",
                 QMessageBox.Ok
             )
             return
 
-        # Check if we have a recipe selected
         if not self.current_recipe:
             QMessageBox.warning(
                 self,
                 "⚠️ No Recipe Selected",
-                "No recipe is currently selected from MES.\n\n"
-                "Please ensure MES is sending a valid recipe.",
+                "No recipe is currently selected from MES.\n\nPlease ensure MES is sending a valid recipe.",
                 QMessageBox.Ok
             )
             return
 
-        # Get current job details from MES
-        if hasattr(self, 'current_job_details') and self.current_job_details:
-            current_job_id = self.current_job_details.get('title')
+        if not self.qr_check_passed:
+            QMessageBox.warning(
+                self,
+                "QR Scan Required",
+                "Please complete the QR check before running the pipeline.",
+                QMessageBox.Ok
+            )
+            return
 
-            # 🔥 STEP 1: GET ALL PENDING PARTS WITH THEIR UIDs
+        if hasattr(self, 'current_job_details') and self.current_job_details:
+            current_job_id = (
+                    self.current_job_details.get('title')
+                    or self.current_job_details.get('workOrder')
+                    or 'Unknown'
+            )
+
             print(f"\n{'=' * 60}")
             print(f"📋 Getting all pending parts from MES")
             pending_parts = self.mes.get_all_pending_parts()
@@ -1085,10 +1184,8 @@ class MainPage(QWidget):
                 for part in pending_parts:
                     print(f"   Part {part.get('partNumber')}: UID = {part.get('uid')}")
 
-                # 🔥 STEP 2: POST ALL UIDs IMMEDIATELY (BEFORE PIPELINE STARTS)
                 print(f"\n📤 Posting all UIDs to MES immediately...")
 
-                # Prepare the list of assembled parts
                 assembled_parts = []
                 for part in pending_parts:
                     part_number = part.get('partNumber')
@@ -1106,14 +1203,6 @@ class MainPage(QWidget):
 
                     if success:
                         print(f"✅ Successfully posted {len(assembled_parts)} UIDs to MES")
-
-                        # # Show confirmation to user
-                        # QMessageBox.information(
-                        #     self,
-                        #     "✅ MES Update Complete",
-                        #     f"Successfully posted {len(assembled_parts)} UIDs to MES:\n\n" +
-                        #     "\n".join([f"• Part {p['part_number']}: {p['uid']}" for p in assembled_parts])
-                        # )
                     else:
                         print(f"❌ Failed to post UIDs to MES")
                         QMessageBox.warning(
@@ -1121,7 +1210,7 @@ class MainPage(QWidget):
                             "⚠️ MES Update Failed",
                             "Failed to post UIDs to MES. Check connection and try again."
                         )
-                        return  # 🛑 Stop pipeline if posting fails
+                        return
             else:
                 print(f"⚠️ No pending parts found in MES")
                 reply = QMessageBox.question(
@@ -1138,45 +1227,46 @@ class MainPage(QWidget):
             current_job_id = None
             print(f"⚠️ No job details available from MES")
 
-        # Check if this job_id already exists in pending jobs
         existing_job = None
         for job in self.pending_jobs:
             if job.get('job_id') == current_job_id:
                 existing_job = job
                 break
 
-        # Update status
         self.machine_status.setText(
             f"▶ {'Continuing' if existing_job else 'Starting'} Job {current_job_id[:8] if current_job_id else 'NEW'}..."
         )
         self.machine_status.repaint()
         QApplication.processEvents()
 
-        # 🔥 STEP 3: NOW START THE PIPELINE (after UIDs are posted)
         if existing_job:
-            # Auto-continue existing job
             print(f"✅ Auto-continuing existing job: {current_job_id}")
             self.continue_job(existing_job)
         else:
-            # Auto-start new job
             print(f"✅ Auto-starting new job: {current_job_id}")
-
-            success = PipelineRunner.run_pipeline_operator_mode(
-                self.current_recipe,
-                self,
-                pending_callback=lambda j: self.save_pending(self.current_recipe, j)
-            )
+            self.pipeline_running = True
+            try:
+                success = PipelineRunner.run_pipeline_operator_mode(
+                    self.current_recipe,
+                    self,
+                    pending_callback=lambda j: self.save_pending(self.current_recipe, j)
+                )
+            finally:
+                self.pipeline_running = False
 
             if success:
                 self.machine_status.setText("READY (MES Auto)")
+                self.has_active_mes_job = False
+                self.qr_check_passed = False
+                self.qr_result_ok = False
+                self.last_qr_job_id = None
+                self.try_fetch_mes_recipe()
             else:
                 self.machine_status.setText("PAUSED")
 
             self.load_pending_jobs()
 
     def start_new_pipeline(self):
-        """Start a new pipeline execution"""
-        # Confirm before running
         job_info = ""
         if hasattr(self, 'current_job_details') and self.current_job_details:
             job_id = self.current_job_details.get('title', 'Unknown')
@@ -1193,35 +1283,40 @@ class MainPage(QWidget):
         if reply == QMessageBox.No:
             return
 
-        # Update status
         self.machine_status.setText("RUNNING")
-
-        success = PipelineRunner.run_pipeline_operator_mode(
-            self.current_recipe,
-            self,
-            pending_callback=lambda j: self.save_pending(self.current_recipe, j)
-        )
+        self.pipeline_running = True
+        try:
+            success = PipelineRunner.run_pipeline_operator_mode(
+                self.current_recipe,
+                self,
+                pending_callback=lambda j: self.save_pending(self.current_recipe, j)
+            )
+        finally:
+            self.pipeline_running = False
 
         if success:
             self.machine_status.setText("READY (MES Auto)")
+            self.has_active_mes_job = False
+            self.qr_check_passed = False
+            self.qr_result_ok = False
+            self.last_qr_job_id = None
+            self.try_fetch_mes_recipe()
         else:
             self.machine_status.setText("PAUSED")
 
         self.load_pending_jobs()
 
     def show_pending_selection_dialog(self):
-        """Show dialog to select which pending job to continue"""
         if not self.pending_jobs:
             QMessageBox.information(
                 self,
                 "No Pending Jobs",
-                "No pending jobs found. Starting new job instead.",
+                "No pending jobs found. Starting a new job instead.",
                 QMessageBox.Ok
             )
             self.start_new_pipeline()
             return
 
-        # Create custom dialog for job selection
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QListWidget, QPushButton, QHBoxLayout
 
         dialog = QDialog(self)
@@ -1231,12 +1326,10 @@ class MainPage(QWidget):
 
         layout = QVBoxLayout(dialog)
 
-        # Instructions
         label = QLabel("Select a pending job to continue:")
         label.setStyleSheet("font-size: 14px; font-weight: bold; margin: 10px;")
         layout.addWidget(label)
 
-        # Job list
         job_list = QListWidget()
         job_list.setStyleSheet("""
             QListWidget {
@@ -1261,7 +1354,6 @@ class MainPage(QWidget):
             total = job.get('total_steps', 0)
             skipped = len(job.get('skipped_steps', []))
 
-            # Get MES details
             mes_details = job.get('mes_job_details', {})
             is_mes_job = '🏭' if mes_details else '📋'
 
@@ -1270,12 +1362,10 @@ class MainPage(QWidget):
                 display_text += f" (⏸ {skipped} skipped)"
 
             job_list.addItem(display_text)
-            # Store job reference as item data
             job_list.item(job_list.count() - 1).setData(Qt.UserRole, job)
 
         layout.addWidget(job_list)
 
-        # Buttons
         button_layout = QHBoxLayout()
 
         continue_btn = QPushButton("Continue Selected")
@@ -1328,7 +1418,6 @@ class MainPage(QWidget):
         button_layout.addWidget(cancel_btn)
         layout.addLayout(button_layout)
 
-        # Connect buttons
         continue_btn.clicked.connect(lambda: self.continue_selected_job(job_list, dialog))
         new_btn.clicked.connect(lambda: [dialog.accept(), self.start_new_pipeline()])
         cancel_btn.clicked.connect(dialog.reject)
@@ -1336,7 +1425,6 @@ class MainPage(QWidget):
         dialog.exec()
 
     def continue_selected_job(self, job_list, dialog):
-        """Continue the selected job from list"""
         current_item = job_list.currentItem()
         if not current_item:
             QMessageBox.warning(
@@ -1352,17 +1440,14 @@ class MainPage(QWidget):
         self.continue_job(job)
 
     def show_continue_job_dialog(self, job):
-        """Show dialog to confirm continuing existing job"""
         job_id = job.get('job_id', 'Unknown')
         completed = len(job.get('completed_steps', []))
         total = job.get('total_steps', 0)
         skipped = len(job.get('skipped_steps', []))
 
-        # Get MES details if available
         mes_details = job.get('mes_job_details', {})
         pending_parts = mes_details.get('pending', [])
 
-        # Build message
         message = f"Job <b>{job_id}</b> already exists with:\n\n"
         message += f"• Completed: {completed}/{total} steps\n"
         message += f"• Skipped: {skipped} steps\n"
@@ -1384,7 +1469,6 @@ class MainPage(QWidget):
         new_btn = dialog.addButton("🔄 Start Fresh (Archive Old)", QMessageBox.ActionRole)
         cancel_btn = dialog.addButton("Cancel", QMessageBox.RejectRole)
 
-        # Style buttons
         continue_btn.setStyleSheet("""
             QPushButton {
                 background-color: #f59e0b;
@@ -1419,45 +1503,36 @@ class MainPage(QWidget):
             self.archive_and_start_new(job)
 
     def archive_and_start_new(self, old_job):
-        """Archive the old job and start a new one with same ID"""
         reply = QMessageBox.question(
             self,
             "Archive Old Job",
-            f"This will mark the existing job as 'archived' and start a fresh one.\n\n"
-            f"Old job data will be preserved for history.\n\n"
-            f"Continue?",
+            "This will mark the existing job as 'archived' and start a fresh one.\n\n"
+            "Old job data will be preserved for history.\n\n"
+            "Continue?",
             QMessageBox.Yes | QMessageBox.No
         )
 
         if reply == QMessageBox.No:
             return
 
-        # Mark old job as archived
         old_job['status'] = 'archived'
         old_job['archived_time'] = datetime.now().isoformat()
 
-        # Save archived job to history (separate file)
         self.save_archived_job(old_job)
 
-        # Remove from pending jobs
         self.pending_jobs = [j for j in self.pending_jobs
                              if j.get('job_id') != old_job.get('job_id')]
 
-        # Update pending jobs file
-        PipelineRunner.save_pending_job(self.current_recipe, None)  # This will rewrite with removed job
-
-        # Start new pipeline
+        PipelineRunner.save_pending_job(self.current_recipe, None)
         self.start_new_pipeline()
 
     def save_archived_job(self, job):
-        """Save archived job to history file"""
         recipe_folder = config_manager.get_recipe_folder(self.current_recipe)
         if not recipe_folder:
             return
 
         archive_file = os.path.join(recipe_folder, 'archived_jobs.json')
 
-        # Load existing archives
         archives = []
         if os.path.exists(archive_file):
             try:
@@ -1466,14 +1541,11 @@ class MainPage(QWidget):
             except:
                 archives = []
 
-        # Add new archive
         archives.append(job)
 
-        # Keep only last 100 archives
         if len(archives) > 100:
             archives = archives[-100:]
 
-        # Save
         try:
             with open(archive_file, 'w', encoding='utf-8') as f:
                 json.dump(archives, f, indent=2, ensure_ascii=False)
@@ -1482,7 +1554,6 @@ class MainPage(QWidget):
             print(f"❌ Error archiving job: {e}")
 
     def show_pending_dialog(self):
-        """Show dialog for pending jobs"""
         if self.waiting_for_mes:
             return
 
@@ -1506,7 +1577,6 @@ class MainPage(QWidget):
             self.force_new_job()
 
     def force_new_job(self):
-        """Force start new job despite pending"""
         if self.waiting_for_mes:
             return
 
@@ -1520,38 +1590,33 @@ class MainPage(QWidget):
         if reply == QMessageBox.Yes:
             self.machine_status.setText("RUNNING")
 
-            success = PipelineRunner.run_pipeline_operator_mode(
-                self.current_recipe,
-                self,
-                pending_callback=lambda j: self.save_pending(self.current_recipe, j)
-            )
+            self.pipeline_running = True
+            try:
+                success = PipelineRunner.run_pipeline_operator_mode(
+                    self.current_recipe,
+                    self,
+                    pending_callback=lambda j: self.save_pending(self.current_recipe, j)
+                )
+            finally:
+                self.pipeline_running = False
 
             if success:
                 self.machine_status.setText("READY (MES Auto)")
+                self.has_active_mes_job = False
+                self.qr_check_passed = False
+                self.qr_result_ok = False
+                self.last_qr_job_id = None
+                self.try_fetch_mes_recipe()
             else:
                 self.machine_status.setText("PAUSED")
 
             self.load_pending_jobs()
 
-    def stop_background_tasks(self):
-        # if self.inventory_timer.isActive():
-        #     self.inventory_timer.stop()
-        if self.mes_recipe_timer.isActive():
-            self.mes_recipe_timer.stop()
-        if self.spinner_timer.isActive():
-            self.spinner_timer.stop()
-
     def open_technician(self):
-        """Open technician login page."""
         self.stop_background_tasks()
         self.main.go_to(self.main.login_page)
 
     def showEvent(self, event):
-        """Refresh when page is shown"""
-        # if not self.inventory_timer.isActive():
-        #     self.inventory_timer.start(30000)
-        if not self.mes_recipe_timer.isActive():
-            self.mes_recipe_timer.start(5000)
         if not self.spinner_timer.isActive():
             self.spinner_timer.start(500)
 
@@ -1559,13 +1624,27 @@ class MainPage(QWidget):
             self.refresh_recipes()
             self.load_pending_jobs()
 
-        self.poll_mes_recipe()
         super().showEvent(event)
 
     def closeEvent(self, event):
-        """Clean up timers"""
         self.time_timer.stop()
-        # self.inventory_timer.stop()
         self.mes_recipe_timer.stop()
         self.spinner_timer.stop()
+
+        if self.qr_worker:
+            self.qr_worker.stop_scan()
+            self.qr_worker.wait(1000)
+            self.qr_worker = None
+
         super().closeEvent(event)
+
+    def stop_background_tasks(self):
+        if self.mes_recipe_timer.isActive():
+            self.mes_recipe_timer.stop()
+        if self.spinner_timer.isActive():
+            self.spinner_timer.stop()
+
+        if self.qr_worker:
+            self.qr_worker.stop_scan()
+            self.qr_worker.wait(1000)
+            self.qr_worker = None
