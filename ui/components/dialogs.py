@@ -178,6 +178,9 @@ class AssemblyDialog(QDialog):
         self.assembly_folder = None
         self.initial_config = initial_config or {}  # Store initial config
         self.assembly_tool_window = None  # Add this for Assembly Tool window
+        self.video_folder = None
+        self.uploaded_video_path = None
+
 
         # Prediction related
         self.prediction_manager = PredictionManager()  # Add this
@@ -280,6 +283,27 @@ class AssemblyDialog(QDialog):
         self.assembly_tool_btn.clicked.connect(self.open_assembly_tool)
         self.assembly_tool_btn.setToolTip("Open Assembly Annotation Tool for bounding box labeling")
         toolbar_layout.addWidget(self.assembly_tool_btn)
+
+        # ===== UPLOAD VIDEO BUTTON =====
+        self.upload_video_btn = QPushButton("🎥 Upload Video")
+        self.upload_video_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 12px;
+                padding: 8px 12px;
+                background-color: #16a085;
+                color: white;
+                border-radius: 4px;
+                font-weight: bold;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #138d75;
+            }
+        }
+        """)
+        self.upload_video_btn.clicked.connect(self.upload_video)
+        self.upload_video_btn.setToolTip("Upload a video file for this Assembly block")
+        toolbar_layout.addWidget(self.upload_video_btn)
 
         # # Load Model button
         # self.load_model_btn = QPushButton("🤖 Load Model")
@@ -784,6 +808,88 @@ class AssemblyDialog(QDialog):
         # Load images from annotation folder automatically
         QTimer.singleShot(100, self.load_bmp_from_annotation)
 
+    def ensure_video_folder(self):
+        """Ensure the uploaded video folder exists for this block"""
+        recipe_path = self.get_current_recipe_path()
+        if not recipe_path:
+            return None
+
+        self.video_folder = os.path.join(
+            recipe_path,
+            "Assembly",
+            f"Block_{self.block_id}",
+            "uploaded_videos"
+        )
+        os.makedirs(self.video_folder, exist_ok=True)
+        return self.video_folder
+
+    def upload_video(self):
+        """Upload a video file into recipe/block-specific folder"""
+        try:
+            # Ensure target folder exists
+            video_folder = self.ensure_video_folder()
+            if not video_folder:
+                QMessageBox.warning(self, "⚠️ No Recipe", "Current recipe not found.")
+                return
+
+            # Let user choose a video
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Video File",
+                "",
+                "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.mpeg *.mpg);;All Files (*.*)"
+            )
+
+            if not file_path:
+                return  # user cancelled
+
+            if not os.path.exists(file_path):
+                QMessageBox.warning(self, "⚠️ File Not Found", "Selected video file does not exist.")
+                return
+
+            original_name = os.path.basename(file_path)
+            ext = os.path.splitext(original_name)[1]
+
+            # Build target filename based on recipe + block_id + timestamp
+            recipe_name = "unknown_recipe"
+            try:
+                if hasattr(config_manager, 'current_recipe_name') and config_manager.current_recipe_name:
+                    recipe_name = str(config_manager.current_recipe_name)
+                elif hasattr(config_manager, 'current_recipe') and config_manager.current_recipe:
+                    recipe_name = str(config_manager.current_recipe)
+            except:
+                pass
+
+            safe_recipe_name = re.sub(r'[^\w\-\.]', '_', str(recipe_name))
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            target_filename = f"{safe_recipe_name}_Block_{self.block_id}_{timestamp}{ext}"
+            target_path = os.path.join(video_folder, target_filename)
+
+            shutil.copy2(file_path, target_path)
+            self.uploaded_video_path = target_path
+
+            # Relative path for message
+            recipe_path = self.get_current_recipe_path()
+            rel_path = target_path
+            if recipe_path:
+                try:
+                    rel_path = os.path.relpath(target_path, recipe_path)
+                except:
+                    pass
+
+            QMessageBox.information(
+                self,
+                "✅ Video Uploaded",
+                f"Video uploaded successfully.\n\n"
+                f"Saved to:\n{rel_path}"
+            )
+
+            print(f"✅ Uploaded video saved to: {target_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "❌ Upload Failed", f"Failed to upload video:\n\n{str(e)}")
+
     # ===== ASSEMBLY TOOL METHODS =====
     def open_assembly_tool(self):
         """Open the Assembly Laser Annotation Tool and temporarily hide this dialog"""
@@ -1213,10 +1319,13 @@ class AssemblyDialog(QDialog):
     def load_initial_configuration(self):
         """Load initial configuration if editing existing assembly"""
         try:
-            self.total_steps = 1
+            self.total_steps = int(self.initial_config.get('total_steps', 1) or 1)
 
-            if 'selections' in self.initial_config:
+            if 'selections' in self.initial_config and isinstance(self.initial_config['selections'], dict):
                 QTimer.singleShot(200, lambda: self.restore_step_selections(self.initial_config['selections']))
+
+            if 'uploaded_video_path' in self.initial_config:
+                self.uploaded_video_path = self.initial_config.get('uploaded_video_path', '')
 
         except Exception as e:
             print(f"Error loading initial configuration: {e}")
@@ -4122,6 +4231,7 @@ class AssemblyDialog(QDialog):
                 'block_id': str(self.block_id),
                 'block_name': str(self.block_name),
                 'total_steps': int(self.total_steps),
+                'uploaded_video_path': str(self.uploaded_video_path) if self.uploaded_video_path else '',
                 'selections': {}
             }
 
@@ -5160,9 +5270,10 @@ class ScrewDialog(QDialog):
         self.block_name = block_name or f"Block_{self.block_id}"
         self.assembly_tool_window = None
         self.config_data = None
+        self.uploaded_video_path = None
 
         self.setWindowTitle("Screw Configuration")
-        self.setFixedSize(250, 260)
+        self.setFixedSize(1400, 800)
 
         layout = QFormLayout(self)
 
@@ -5185,7 +5296,7 @@ class ScrewDialog(QDialog):
         self.torque_spinbox.setStyleSheet("font-size: 14px; padding: 5px;")
         layout.addRow("💪 Torque:", self.torque_spinbox)
 
-        self.screw_location_btn = QPushButton("🔩 Screw Location")
+        self.screw_location_btn = QPushButton("🔩 Pick Screw Location")
         self.screw_location_btn.setStyleSheet("""
             QPushButton {
                 font-size: 12px;
@@ -5204,7 +5315,7 @@ class ScrewDialog(QDialog):
         self.screw_location_btn.setToolTip("Open the same Assembly Annotation Tool page")
         layout.addRow(self.screw_location_btn)
 
-        self.screw_location_2_btn = QPushButton("🔩 Screw Location 2")
+        self.screw_location_2_btn = QPushButton("🔩 Assembly Screw Location")
         self.screw_location_2_btn.setStyleSheet("""
             QPushButton {
                 font-size: 12px;
@@ -5223,6 +5334,25 @@ class ScrewDialog(QDialog):
         self.screw_location_2_btn.setToolTip("Open alternate screw location tool with separate folders")
         layout.addRow(self.screw_location_2_btn)
 
+        self.upload_video_btn = QPushButton("🎥 Upload Video")
+        self.upload_video_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 12px;
+                padding: 8px 12px;
+                background-color: #16a085;
+                color: white;
+                border-radius: 4px;
+                font-weight: bold;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #138d75;
+            }
+        """)
+        self.upload_video_btn.clicked.connect(self.upload_video)
+        self.upload_video_btn.setToolTip("Upload a video file for this Screw block")
+        layout.addRow(self.upload_video_btn)
+
         # OK / Cancel buttons
         btn_row = QHBoxLayout()
         ok_btn = QPushButton("OK")
@@ -5240,6 +5370,7 @@ class ScrewDialog(QDialog):
         self.screw_spinbox.setValue(int(config.get("count", 4)))
         self.screw_type_combo.setCurrentText(str(config.get("type", "M4")))
         self.torque_spinbox.setValue(int(config.get("torque", 10)))
+        self.uploaded_video_path = config.get("uploaded_video_path", "")
 
     def get_config(self):
         return {
@@ -5250,12 +5381,109 @@ class ScrewDialog(QDialog):
             "type": str(self.screw_type_combo.currentText()),
             "torque": int(self.torque_spinbox.value()),
             "position": f"ScrewBoxesData/Block_{self.block_id}",
-            "position2": f"ScrewBoxesData2/Block_{self.block_id}"
+            "position2": f"ScrewBoxesData2/Block_{self.block_id}",
+            "uploaded_video_path": str(self.uploaded_video_path) if self.uploaded_video_path else ""
         }
 
     def accept(self):
         self.config_data = self.get_config()
         super().accept()
+
+    def ensure_video_folder(self):
+        """Ensure the uploaded video folder exists for this screw block"""
+        recipe_path = None
+        try:
+            if hasattr(config_manager, 'get_current_recipe_folder'):
+                recipe_path = config_manager.get_current_recipe_folder()
+        except:
+            pass
+
+        if not recipe_path:
+            try:
+                if hasattr(config_manager, 'current_recipe'):
+                    recipe_path = os.path.join("recipes", str(config_manager.current_recipe))
+            except:
+                pass
+
+        if not recipe_path:
+            return None
+
+        video_folder = os.path.join(
+            recipe_path,
+            "Screw",
+            f"Block_{self.block_id}",
+            "uploaded_videos"
+        )
+        os.makedirs(video_folder, exist_ok=True)
+        return video_folder
+
+    def upload_video(self):
+        """Upload a video file into screw/block-specific folder"""
+        try:
+            video_folder = self.ensure_video_folder()
+            if not video_folder:
+                QMessageBox.warning(self, "⚠️ No Recipe", "Current recipe not found.")
+                return
+
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Video File",
+                "",
+                "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.mpeg *.mpg);;All Files (*.*)"
+            )
+
+            if not file_path:
+                return
+
+            if not os.path.exists(file_path):
+                QMessageBox.warning(self, "⚠️ File Not Found", "Selected video file does not exist.")
+                return
+
+            original_name = os.path.basename(file_path)
+            ext = os.path.splitext(original_name)[1]
+
+            recipe_name = "unknown_recipe"
+            try:
+                if hasattr(config_manager, 'current_recipe_name') and config_manager.current_recipe_name:
+                    recipe_name = str(config_manager.current_recipe_name)
+                elif hasattr(config_manager, 'current_recipe') and config_manager.current_recipe:
+                    recipe_name = str(config_manager.current_recipe)
+            except:
+                pass
+
+            safe_recipe_name = re.sub(r'[^\w\-\.]', '_', str(recipe_name))
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            target_filename = f"{safe_recipe_name}_Screw_Block_{self.block_id}_{timestamp}{ext}"
+            target_path = os.path.join(video_folder, target_filename)
+
+            shutil.copy2(file_path, target_path)
+            self.uploaded_video_path = target_path
+
+            recipe_path = None
+            try:
+                if hasattr(config_manager, 'get_current_recipe_folder'):
+                    recipe_path = config_manager.get_current_recipe_folder()
+            except:
+                pass
+
+            rel_path = target_path
+            if recipe_path:
+                try:
+                    rel_path = os.path.relpath(target_path, recipe_path)
+                except:
+                    pass
+
+            QMessageBox.information(
+                self,
+                "✅ Video Uploaded",
+                f"Video uploaded successfully.\n\nSaved to:\n{rel_path}"
+            )
+
+            print(f"✅ Screw uploaded video saved to: {target_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "❌ Upload Failed", f"Failed to upload video:\n\n{str(e)}")
 
     def open_assembly_tool(self):
         """Open Screw Location Tool"""

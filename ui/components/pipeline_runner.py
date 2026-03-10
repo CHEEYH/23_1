@@ -8,7 +8,7 @@ from ui.components.mes_client import MESClient  # Add this import
 
 from PySide6.QtWidgets import (
     QMessageBox, QDialog, QVBoxLayout, QLabel, QPushButton,
-    QFrame, QHBoxLayout, QGridLayout, QSplitter, QWidget
+    QFrame, QHBoxLayout, QGridLayout, QSplitter, QWidget, QSizePolicy
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
@@ -463,7 +463,21 @@ class PipelineRunner:
             player.setAudioOutput(audio)
             player.setVideoOutput(video_widget)
             player.setSource(QUrl.fromLocalFile(video_path))
-            audio.setVolume(1.0)
+            audio.setVolume(0.0)
+
+            def loop_video(status):
+                from PySide6.QtMultimedia import QMediaPlayer
+                if status == QMediaPlayer.EndOfMedia:
+                    print(f"🔄 Replaying screw video: {video_path}")
+                    player.stop()
+                    player.setPosition(0)
+                    player.play()
+
+            player.mediaStatusChanged.connect(loop_video)
+
+            dialog._video_player = player
+            dialog._video_audio = audio
+
             player.play()
 
             def close_video():
@@ -1398,7 +1412,7 @@ class PipelineRunner:
         selections = {}
         total_assembly_steps = 0
 
-        # Parse configuration structure (same as before)
+        # Parse configuration structure
         if 'selections' in assembly_data and isinstance(assembly_data['selections'], dict):
             selections_data = assembly_data['selections']
             step_keys = [k for k in selections_data.keys() if k.isdigit()]
@@ -1440,7 +1454,9 @@ class PipelineRunner:
             if step_key not in selections:
                 continue
 
-            selection = selections[step_key]
+            selection = dict(selections[step_key])
+            selection['uploaded_video_path'] = assembly_data.get('uploaded_video_path', '')
+
             product_data = selection.get('product_data', {})
             product_name = product_data.get('name', f'Step {assembly_step}')
 
@@ -1448,22 +1464,20 @@ class PipelineRunner:
             part_needed = PipelineRunner._extract_part_from_product_name(product_name)
 
             print(f"DEBUG: Step {assembly_step} - Product: '{product_name}' → MES Part: '{part_needed}'")
+            print(f"DEBUG: uploaded_video_path = {selection.get('uploaded_video_path', '')}")
 
-            # In _execute_assembly_block_operator, around line where you get inventory:
             try:
                 if PipelineRunner._api_client:
                     current_stock = PipelineRunner._api_client.get_inventory(part_needed)
                     print(f"   API inventory for {part_needed}: {current_stock}")
                 else:
-                    # Fallback if API client not available
                     print(f"   ⚠️ No API client available, assuming part {part_needed} is available")
-                    current_stock = 999  # Assume available
+                    current_stock = 999
             except Exception as e:
                 print(f"❌ Failed to get inventory from API: {e}")
-                current_stock = 999  # Fallback - assume available
+                current_stock = 999
 
             if current_stock <= 0:
-                # Missing part, ask operator
                 reply = PipelineRunner._ask_operator_about_missing_part(
                     assembly_step, product_name, part_needed, current_stock, parent_widget
                 )
@@ -1487,7 +1501,6 @@ class PipelineRunner:
             )
 
             if step_success:
-                # 🔥 DEDUCT INVENTORY VIA API AFTER SUCCESSFUL ASSEMBLY
                 try:
                     deduct_success = PipelineRunner._api_client.deduct_inventory(part_needed, 1)
                     if deduct_success:
@@ -1690,9 +1703,11 @@ class PipelineRunner:
             step_key = str(step_num)
 
             if step_key in selections:
-                selection = selections[step_key]
+                selection = dict(selections[step_key])
+                selection['uploaded_video_path'] = assembly_data.get('uploaded_video_path', '')
 
                 print(f"DEBUG: Processing step {step_key}: {selection.get('product_id', 'Unknown')}")
+                print(f"DEBUG: uploaded_video_path = {selection.get('uploaded_video_path', '')}")
 
                 # Execute step
                 step_success = PipelineRunner._execute_assembly_step_like_dialog(
@@ -1782,10 +1797,13 @@ class PipelineRunner:
         layout.setContentsMargins(20, 20, 20, 20)
 
         recipe_name = config_manager.current_recipe
-        video_path = r"C:\Users\PC_AI_DS\Desktop\Video\1.mp4"
 
         # Try to get block_id from block_data / config / screw_data
         config = block_data.get('config')
+
+        video_path = ""
+        if isinstance(config, dict):
+            video_path = config.get("uploaded_video_path", "") or ""
 
         try:
             block_id = PipelineRunner._resolve_block_id(block_data)
@@ -1802,11 +1820,6 @@ class PipelineRunner:
         if isinstance(config, dict):
             print(f"   config keys = {list(config.keys())}")
 
-        print(f"🔍 Screw block resolved block_id = {block_id}")
-        print(f"   block_data keys = {list(block_data.keys())}")
-        if isinstance(config, dict):
-            print(f"   config keys = {list(config.keys())}")
-
         # ===== SEND FIRST COORDINATES: ScrewBoxesData/Block_x =====
         first_send_success, first_coord_string = PipelineRunner._send_latest_coordinates_from_folder(
             recipe_name, "ScrewBoxesData", block_id
@@ -1814,19 +1827,20 @@ class PipelineRunner:
 
         # Header
         header = QLabel(f"🔩 Screw Operation - Step {step_number}")
+        header.setAlignment(Qt.AlignCenter)
+        header.setFixedHeight(70)
         header.setStyleSheet("""
             QLabel {
                 font-size: 20px;
                 font-weight: bold;
                 color: white;
                 background-color: #f39c12;
-                padding: 15px;
+                padding: 10px 15px;
                 border-radius: 8px;
-                margin-bottom: 15px;
+                margin-bottom: 10px;
             }
         """)
-        header.setAlignment(Qt.AlignCenter)
-        layout.addWidget(header)
+        layout.addWidget(header, 0)
 
         # TCP send status for first coordinates
         # first_coord_status = QLabel()
@@ -1867,6 +1881,7 @@ class PipelineRunner:
         # Show configuration
         if config:
             info_frame = QFrame()
+            info_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
             info_frame.setStyleSheet("""
                 QFrame {
                     border: 2px solid #f39c12;
@@ -1878,6 +1893,8 @@ class PipelineRunner:
             """)
 
             info_layout = QVBoxLayout(info_frame)
+            info_layout.setContentsMargins(12, 12, 12, 12)
+            info_layout.setSpacing(10)
 
             title_label = QLabel("⚙️ Screw Configuration")
             title_label.setStyleSheet("""
@@ -1922,31 +1939,30 @@ class PipelineRunner:
                 position = "Unknown"
 
             info_grid = QGridLayout()
-            info_grid.setSpacing(10)
+            info_grid.setSpacing(5)
 
             labels = [
-                ("🔢 Screw Count:", screw_count),
+                ("🔢 Screw Count (pcs):", screw_count),
                 ("⚙️ Screw Type:", screw_type),
-                ("💪 Torque Setting:", torque),
-                ("📍 Screw Positions:", position),
-                ("🧩 Block ID:", block_id),
+                ("💪 Torque Setting (Nm):", torque),
+                # ("📍 Screw Positions:", position),
+                # ("🧩 Block ID:", block_id),
             ]
 
             for i, (label_text, value) in enumerate(labels):
                 label = QLabel(label_text)
-                label.setStyleSheet("font-weight: bold; font-size: 15px; color: #2c3e50;")
+                label.setStyleSheet("font-weight: bold; font-size: 30px; color: #2c3e50;")
                 info_grid.addWidget(label, i, 0)
 
                 value_label = QLabel(str(value))
                 value_label.setStyleSheet(
-                    "font-size: 15px; padding: 5px; background-color: white; border-radius: 4px; border: 1px solid #bdc3c7;")
+                    "font-size: 30px; padding: 5px; background-color: white; border-radius: 4px; border: 1px solid #bdc3c7;")
                 if i == 3:
                     value_label.setWordWrap(True)
                 info_grid.addWidget(value_label, i, 1)
 
             info_layout.addLayout(info_grid)
-            info_layout.addStretch()
-            layout.addWidget(info_frame)
+            layout.addWidget(info_frame, 0)
         else:
             warning_frame = QFrame()
             warning_frame.setStyleSheet("""
@@ -2077,13 +2093,15 @@ class PipelineRunner:
                 print(f"⚠️ Failed to send ScrewBoxesData2 coordinates before video")
 
             dialog.accept()
+            if video_path and os.path.exists(video_path):
+                PipelineRunner._show_video_dialog(
+                    video_path=video_path,
+                    parent_widget=parent_widget,
+                    title=f"Step {step_number}: Screw Video"
+                )
+            else:
+                print(f"⚠️ No uploaded screw video found for block {block_id}")
 
-            # Show video after operator pressed OK
-            PipelineRunner._show_video_dialog(
-                video_path=video_path,
-                parent_widget=parent_widget,
-                title=f"Step {step_number}: Screw Video"
-            )
 
         ok_btn.clicked.connect(on_ok_continue)
 
@@ -2344,15 +2362,18 @@ class PipelineRunner:
         import cv2
         import numpy as np
         from PySide6.QtWidgets import QApplication, QProgressBar
-        from PySide6.QtCore import QTimer
+        from PySide6.QtCore import QTimer, QSize
 
         # ===== INITIALIZE HEARTBEAT MANAGER AND CALIBRATION =====
-        PipelineRunner._init_heartbeat_manager()  # This increments reference count for this step
+        PipelineRunner._init_heartbeat_manager()
         calibration = PipelineRunner._load_calibration(config_manager.current_recipe)
 
         product_data = selection.get('product_data', {})
         product_name = product_data.get('name', f'Product {step_num}')
         product_id = selection.get('product_id', product_data.get('id', f'product_{step_num}'))
+        uploaded_video_path = selection.get('uploaded_video_path', '')
+
+        capture_runner = None
 
         # ================== FIND REFERENCE IMAGE ==================
         reference_image_path = product_data.get('image_path')
@@ -2360,6 +2381,7 @@ class PipelineRunner:
         print(f"DEBUG product_name = {product_name}")
         print(f"DEBUG product_data = {product_data}")
         print(f"DEBUG original reference_image_path = {reference_image_path}")
+        print(f"DEBUG uploaded_video_path = {uploaded_video_path}")
 
         # Fallback 1: try Annotation folder in current recipe
         if not reference_image_path or not os.path.exists(reference_image_path):
@@ -2371,7 +2393,6 @@ class PipelineRunner:
                 if os.path.exists(annotation_folder):
                     import glob
 
-                    # exact name match first
                     exact_bmp = os.path.join(annotation_folder, f"{product_name}.bmp")
                     exact_png = os.path.join(annotation_folder, f"{product_name}.png")
                     exact_jpg = os.path.join(annotation_folder, f"{product_name}.jpg")
@@ -2386,14 +2407,12 @@ class PipelineRunner:
                     elif os.path.exists(exact_jpeg):
                         reference_image_path = exact_jpeg
                     else:
-                        # fuzzy match with full product name
                         matches = []
                         matches.extend(glob.glob(os.path.join(annotation_folder, f"*{product_name}*.bmp")))
                         matches.extend(glob.glob(os.path.join(annotation_folder, f"*{product_name}*.png")))
                         matches.extend(glob.glob(os.path.join(annotation_folder, f"*{product_name}*.jpg")))
                         matches.extend(glob.glob(os.path.join(annotation_folder, f"*{product_name}*.jpeg")))
 
-                        # if product name like "3_PL8-02", also try suffix "PL8-02"
                         if not matches and "_" in product_name:
                             suffix = product_name.split("_", 1)[1].strip()
                             print(f"DEBUG trying suffix match: {suffix}")
@@ -2406,7 +2425,7 @@ class PipelineRunner:
                             matches.sort(key=os.path.getmtime, reverse=True)
                             reference_image_path = matches[0]
 
-        # Fallback 2: try from selection root if image_path stored as relative path
+        # Fallback 2: relative path
         if reference_image_path and not os.path.isabs(reference_image_path):
             recipe_folder = config_manager.get_recipe_folder(config_manager.current_recipe)
             if recipe_folder:
@@ -2418,7 +2437,6 @@ class PipelineRunner:
         print(f"DEBUG path exists = {os.path.exists(reference_image_path) if reference_image_path else False}")
         # ================== END FIND REFERENCE IMAGE ==================
 
-        # Get saved configuration image path
         saved_config_image = None
         if 'captured_image_path' in selection and selection['captured_image_path']:
             saved_config_image = selection['captured_image_path']
@@ -2442,10 +2460,8 @@ class PipelineRunner:
         if not block_id:
             block_id = '1'
 
-        # Get recipe name
         recipe_name = config_manager.current_recipe
 
-        # Create save path for new capture
         recipe_folder = config_manager.get_recipe_folder(recipe_name)
         capture_folder = os.path.join(recipe_folder, "Capture")
         os.makedirs(capture_folder, exist_ok=True)
@@ -2463,7 +2479,6 @@ class PipelineRunner:
             yolo_model_folder = os.path.join(recipe_path, "yolo_model")
             if os.path.exists(yolo_model_folder):
                 import glob
-                # Find best.pt in train_* subfolders
                 best_pattern = os.path.join(yolo_model_folder, "**", "weights", "best.pt")
                 best_files = glob.glob(best_pattern, recursive=True)
                 if best_files:
@@ -2471,23 +2486,19 @@ class PipelineRunner:
                     model_path = best_files[0]
                     print(f"DEBUG: Found model: {model_path}")
 
-                    # Try to load model to get class mapping
                     try:
                         from ultralytics import YOLO
                         temp_model = YOLO(model_path)
 
-                        # Get class ID for this product
                         if hasattr(temp_model, 'names'):
                             print(f"DEBUG: Model classes: {temp_model.names}")
 
-                            # Try exact match first
                             for cid, name in temp_model.names.items():
                                 if product_name.lower() == name.lower():
                                     class_id = cid
                                     print(f"DEBUG: Exact match - Class ID {cid}: {name}")
                                     break
 
-                            # Try partial match if no exact match
                             if class_id is None:
                                 for cid, name in temp_model.names.items():
                                     if product_name.lower() in name.lower() or name.lower() in product_name.lower():
@@ -2495,7 +2506,6 @@ class PipelineRunner:
                                         print(f"DEBUG: Partial match - Class ID {cid}: {name}")
                                         break
 
-                            # Try just the letter (like 'A' from '0_A')
                             if class_id is None and '_' in product_name:
                                 letter_part = product_name.split('_')[-1]
                                 print(f"DEBUG: Trying letter part: '{letter_part}'")
@@ -2517,13 +2527,10 @@ class PipelineRunner:
 
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        layout.setSpacing(10)
 
-        # Header
-        if class_id is not None:
-            header_text = f"🔍 Step {step_num}/{total_steps}: {product_name}"
-        else:
-            header_text = f"🔍 Step {step_num}/{total_steps}: {product_name} (No class filter)"
+        header_text = f"🔍 Step {step_num}/{total_steps}: {product_name}" if class_id is not None \
+            else f"🔍 Step {step_num}/{total_steps}: {product_name} (No class filter)"
 
         header = QLabel(header_text)
         header.setStyleSheet("""
@@ -2540,7 +2547,6 @@ class PipelineRunner:
         header.setAlignment(Qt.AlignCenter)
         layout.addWidget(header)
 
-        # Main content splitter
         splitter = QSplitter(Qt.Horizontal)
 
         # ----- LEFT: Reference Image -----
@@ -2615,7 +2621,6 @@ class PipelineRunner:
         detection_header.setAlignment(Qt.AlignCenter)
         right_layout.addWidget(detection_header)
 
-        # Detection container
         detection_container = QWidget()
         detection_container.setMinimumHeight(450)
         detection_container.setStyleSheet("""
@@ -2628,16 +2633,12 @@ class PipelineRunner:
 
         detection_container_layout = QVBoxLayout(detection_container)
 
-        # Loading widget
         loading_widget = QWidget()
         loading_layout = QVBoxLayout(loading_widget)
 
-        # Loading animation
         loading_label = QLabel()
         loading_label.setAlignment(Qt.AlignCenter)
         loading_label.setMinimumHeight(200)
-
-        # Try to use GIF or fallback to text animation
         loading_label.setText("⏳ Processing...")
         loading_label.setStyleSheet("""
             QLabel {
@@ -2647,7 +2648,6 @@ class PipelineRunner:
             }
         """)
 
-        # Create animation timer
         dot_count = 0
         loading_timer = QTimer()
 
@@ -2662,7 +2662,6 @@ class PipelineRunner:
 
         loading_layout.addWidget(loading_label)
 
-        # Loading message
         loading_message = QLabel("Capturing image and running AI detection...")
         loading_message.setAlignment(Qt.AlignCenter)
         loading_message.setStyleSheet("""
@@ -2674,9 +2673,8 @@ class PipelineRunner:
         """)
         loading_layout.addWidget(loading_message)
 
-        # Progress bar
         progress_bar = QProgressBar()
-        progress_bar.setRange(0, 0)  # Indeterminate mode
+        progress_bar.setRange(0, 0)
         progress_bar.setStyleSheet("""
             QProgressBar {
                 border: 2px solid #8e44ad;
@@ -2694,7 +2692,6 @@ class PipelineRunner:
 
         detection_container_layout.addWidget(loading_widget)
 
-        # Detection result label (initially hidden)
         detection_label = QLabel()
         detection_label.setAlignment(Qt.AlignCenter)
         detection_label.setVisible(False)
@@ -2702,20 +2699,18 @@ class PipelineRunner:
 
         right_layout.addWidget(detection_container)
 
-        # Detection info panel
         info_frame = QFrame()
         info_frame.setStyleSheet("""
             QFrame {
                 background-color: #f8f9fa;
                 border-radius: 6px;
-                padding: 1x;
+                padding: 1px;
                 margin-top: 10px;
                 border: 1px solid #8e44ad;
             }
         """)
         info_layout = QVBoxLayout(info_frame)
 
-        # Calibration status
         cal_status_label = QLabel()
         if calibration and calibration.is_calibrated:
             cal_status_label.setText("📐 Calibration: Loaded (World Coordinates)")
@@ -2739,7 +2734,6 @@ class PipelineRunner:
         confidence_label.setStyleSheet("font-size: 13px; color: #7f8c8d;")
         info_layout.addWidget(confidence_label)
 
-        # Coordinate sent status
         coord_status_label = QLabel("📤 Coordinates: Not sent")
         coord_status_label.setStyleSheet(
             "font-size: 12px; color: #7f8c8d; padding: 5px; background-color: #f0f0f0; border-radius: 3px;")
@@ -2771,7 +2765,41 @@ class PipelineRunner:
                 background-color: #c0392b;
             }
         """)
-        cancel_btn.clicked.connect(dialog.reject)
+
+        def cleanup_capture_runner():
+            nonlocal capture_runner
+            if capture_runner is not None:
+                try:
+                    if hasattr(capture_runner, "stop"):
+                        capture_runner.stop()
+                    elif hasattr(capture_runner, "close"):
+                        capture_runner.close()
+                except Exception as e:
+                    print(f"⚠️ Error cleaning capture runner: {e}")
+                capture_runner = None
+
+        def on_cancel():
+            cleanup_capture_runner()
+            dialog.reject()
+
+        cancel_btn.clicked.connect(on_cancel)
+
+        retry_btn = QPushButton("🔄 Retry Detection")
+        retry_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 14px;
+                padding: 12px 24px;
+                background-color: #f39c12;
+                color: white;
+                border-radius: 6px;
+                min-width: 180px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e67e22;
+            }
+        """)
+        retry_btn.setEnabled(False)
 
         verify_btn = QPushButton("✅ Verify & Continue")
         verify_btn.setStyleSheet("""
@@ -2795,334 +2823,412 @@ class PipelineRunner:
 
         button_layout.addWidget(cancel_btn)
         button_layout.addStretch()
+        button_layout.addWidget(retry_btn)
         button_layout.addWidget(verify_btn)
 
         layout.addLayout(button_layout)
 
-        # Variables for capture results
+        # Variables
         captured_image_path = None
         detection_results = None
         output_path = None
         processing_complete = False
         predictions_for_sending = []
+        target_detected_successfully = False
+        auto_retry_count = 0
+        max_auto_retry = 1
+        manual_retry_count = 0
 
         def show_results():
-            """Hide loading and show detection results"""
             nonlocal processing_complete
-
             QApplication.processEvents()
-
-            # Hide loading widget
             loading_widget.setVisible(False)
-
-            # Show detection label
             detection_label.setVisible(True)
-
             processing_complete = True
-
-            # Stop animation timer
             if loading_timer.isActive():
                 loading_timer.stop()
 
-        def on_capture_finished(success, message, image_path):
-            """Callback when AutoCaptureFlow finishes"""
-            nonlocal captured_image_path, detection_results, output_path, predictions_for_sending
+        def has_target_class(detections, target_class_id):
+            try:
+                if len(detections.boxes) == 0:
+                    return False
+                if target_class_id is None:
+                    return len(detections.boxes) > 0
+
+                boxes = detections.boxes
+                class_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
+                for cid in class_ids:
+                    if int(cid) == int(target_class_id):
+                        return True
+                return False
+            except Exception as e:
+                print(f"❌ Error checking target class: {e}")
+                return False
+
+        def update_detection_pixmap(pixmap):
+            if pixmap.isNull():
+                return
+
+            target_size = detection_container.size() - QSize(20, 20)
+            if target_size.width() < 100 or target_size.height() < 100:
+                target_size = QSize(700, 450)
+
+            scaled = pixmap.scaled(
+                target_size,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            detection_label.setPixmap(scaled)
+
+        def start_detection_capture(status_text="📊 Status: Opening camera..."):
+            nonlocal capture_runner
+
+            detection_status.setText(status_text)
+            detection_status.setStyleSheet("font-size: 13px; color: #f39c12; font-weight: bold;")
+
+            detection_header.setText("🤖 Detection Result")
+            detection_header.setStyleSheet("""
+                QLabel {
+                    font-size: 16px;
+                    font-weight: bold;
+                    color: white;
+                    padding: 10px;
+                    background-color: #8e44ad;
+                    border-radius: 6px;
+                    margin-bottom: 10px;
+                }
+            """)
+
+            detection_result.setText("🏷️ Detected objects: --")
+            confidence_label.setText("📈 Confidence: --")
+            coord_status_label.setText("📤 Coordinates: Not sent")
+            coord_status_label.setStyleSheet(
+                "font-size: 12px; color: #7f8c8d; padding: 5px; background-color: #f0f0f0; border-radius: 3px;"
+            )
+
+            detection_label.clear()
+            loading_widget.setVisible(True)
+            detection_label.setVisible(False)
+
+            verify_btn.setEnabled(False)
+            retry_btn.setEnabled(False)
+
+            if not loading_timer.isActive():
+                loading_timer.start(500)
 
             QApplication.processEvents()
 
-            if success and image_path:
-                try:
-                    # Update status
-                    detection_status.setText("📊 Status: Image captured, running AI detection...")
-
-                    # Move/copy the captured image to the step folder
-                    shutil.copy2(image_path, new_capture_path)
-
-                    # Clean up original captured file
-                    if os.path.exists(image_path):
-                        os.remove(image_path)
-
-                    captured_image_path = new_capture_path
-
-                    # Run YOLO detection with class filter
-                    if model_path and os.path.exists(model_path):
-                        try:
-                            from ultralytics import YOLO
-
-                            # Read the captured image
-                            frame = cv2.imread(new_capture_path)
-
-                            # Load model
-                            model = YOLO(model_path)
-
-                            # Run detection with class filter
-                            if class_id is not None:
-                                print(f"DEBUG: 🔍 Detecting ONLY class {class_id} for product '{product_name}'")
-                                results = model(frame, conf=0.25, classes=[class_id])
-                            else:
-                                print(f"DEBUG: 🔍 Detecting ALL objects for product '{product_name}'")
-                                results = model(frame, conf=0.25)
-
-                            detections = results[0]
-
-                            # ===== EXTRACT PREDICTIONS FOR COORDINATE SENDING =====
-                            predictions_for_sending = []
-                            if len(detections.boxes) > 0:
-                                boxes = detections.boxes
-
-                                # Extract predictions in format expected by send_coordinates_to_server
-                                if hasattr(boxes, 'xyxy') and hasattr(boxes, 'cls') and hasattr(boxes, 'conf'):
-                                    for i in range(len(boxes)):
-                                        # Get coordinates
-                                        xyxy = boxes.xyxy[i].cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else \
-                                        boxes.xyxy[i]
-
-                                        # Get class ID
-                                        class_id_val = int(
-                                            boxes.cls[i].cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls[i])
-
-                                        # Get confidence
-                                        conf_val = float(
-                                            boxes.conf[i].cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf[
-                                                i])
-
-                                        # Get class name
-                                        class_name = detections.names.get(class_id_val, f"class_{class_id_val}")
-
-                                        predictions_for_sending.append({
-                                            'bbox': xyxy.tolist() if hasattr(xyxy, 'tolist') else xyxy,
-                                            'class_id': class_id_val,
-                                            'class_name': class_name,
-                                            'confidence': conf_val
-                                        })
-
-                                # ===== SEND COORDINATES TO SERVER =====
-                                if predictions_for_sending:
-                                    # Show calibration status with the fixed path
-                                    if calibration and calibration.is_calibrated:
-                                        print(
-                                            f"📐 PipelineRunner using WORLD coordinates from: C:\\Users\\PC_AI_DS\\Pictures\\LaserCalibration\\calibration.json")
-                                        coord_status_label.setText("📤 Converting to world coordinates...")
-                                        coord_status_label.setStyleSheet(
-                                            "font-size: 12px; color: #f39c12; padding: 5px; background-color: #fff3e0; border-radius: 3px; font-weight: bold;")
-                                    else:
-                                        print(f"📷 PipelineRunner using PIXEL coordinates (calibration not loaded)")
-                                        coord_status_label.setText("📤 Using pixel coordinates...")
-                                        coord_status_label.setStyleSheet(
-                                            "font-size: 12px; color: #7f8c8d; padding: 5px; background-color: #f0f0f0; border-radius: 3px;")
-
-                                    # Update status
-                                    QApplication.processEvents()
-
-                                    # Send coordinates
-                                    success_sent = PipelineRunner.send_coordinates_to_server(predictions_for_sending,
-                                                                                             calibration)
-
-                                    if success_sent:
-                                        coord_status_label.setText(
-                                            f"✅ World coordinates sent: {len(predictions_for_sending)} objects")
-                                        coord_status_label.setStyleSheet(
-                                            "font-size: 12px; color: #27ae60; padding: 5px; background-color: #e8f8ef; border-radius: 3px; font-weight: bold;")
-                                    else:
-                                        coord_status_label.setText("❌ Failed to send world coordinates")
-                                        coord_status_label.setStyleSheet(
-                                            "font-size: 12px; color: #e74c3c; padding: 5px; background-color: #ffebee; border-radius: 3px; font-weight: bold;")
-
-                                    QApplication.processEvents()
-
-                            # Draw bounding boxes
-                            annotated_frame = detections.plot()
-
-                            # Save annotated image
-                            annotated_filename = f"Step_{step_num}_{timestamp}_detected.jpg"
-                            output_path = os.path.join(capture_folder, f"Step_{step_num}_{timestamp}_detected.jpg")
-                            cv2.imwrite(output_path, annotated_frame)
-
-                            # Display annotated image
-                            rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                            height, width = rgb_frame.shape[:2]
-
-                            from PySide6.QtGui import QImage
-                            q_img = QImage(rgb_frame.data, width, height,
-                                           rgb_frame.strides[0], QImage.Format_RGB888)
-                            pixmap = QPixmap.fromImage(q_img)
-
-                            if not pixmap.isNull():
-                                scaled = pixmap.scaled(detection_label.size(),
-                                                       Qt.KeepAspectRatio,
-                                                       Qt.SmoothTransformation)
-                                detection_label.setPixmap(scaled)
-
-                            # Update detection info
-                            if len(detections.boxes) > 0:
-                                boxes = detections.boxes
-                                confidences = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
-
-                                # Count objects by class
-                                class_counts = {}
-                                if hasattr(detections, 'names') and hasattr(boxes, 'cls'):
-                                    class_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
-                                    for cid in class_ids:
-                                        class_name = detections.names.get(int(cid), f"class_{int(cid)}")
-                                        class_counts[class_name] = class_counts.get(class_name, 0) + 1
-
-                                # Update UI based on whether we found the target class
-                                target_found = False
-                                if class_id is not None:
-                                    for cid in class_ids:
-                                        if int(cid) == class_id:
-                                            target_found = True
-                                            break
-
-                                if (class_id is None) or (class_id is not None and target_found):
-                                    detection_header.setText("✅ Detection Result")
-                                    detection_header.setStyleSheet("""
-                                        QLabel {
-                                            font-size: 16px;
-                                            font-weight: bold;
-                                            color: white;
-                                            padding: 10px;
-                                            background-color: #27ae60;
-                                            border-radius: 6px;
-                                            margin-bottom: 10px;
-                                        }
-                                    """)
-
-                                    detection_status.setText(f"✅ Detection: {len(boxes)} objects found")
-                                    detection_status.setStyleSheet(
-                                        "font-size: 13px; color: #27ae60; font-weight: bold;")
-                                else:
-                                    detection_header.setText(f"⚠️ No {product_name} Detected")
-                                    detection_header.setStyleSheet("""
-                                        QLabel {
-                                            font-size: 16px;
-                                            font-weight: bold;
-                                            color: white;
-                                            padding: 10px;
-                                            background-color: #e67e22;
-                                            border-radius: 6px;
-                                            margin-bottom: 10px;
-                                        }
-                                    """)
-
-                                    detection_status.setText(f"⚠️ No {product_name} found")
-                                    detection_status.setStyleSheet(
-                                        "font-size: 13px; color: #e67e22; font-weight: bold;")
-
-                                objects_text = ", ".join([f"{k}: {v}" for k, v in class_counts.items()])
-                                detection_result.setText(f"🏷️ Detected: {objects_text}")
-
-                                avg_confidence = np.mean(confidences) * 100
-                                confidence_label.setText(f"📈 Confidence: {avg_confidence:.1f}%")
-
-                                detection_results = {
-                                    'image_path': output_path,
-                                    'objects': class_counts,
-                                    'count': len(boxes),
-                                    'confidence': float(avg_confidence),
-                                    'class_id': class_id,
-                                    'target_found': target_found if class_id is not None else True
-                                }
-                            else:
-                                detection_header.setText(f"⚠️ No Objects Detected")
-                                detection_header.setStyleSheet("""
-                                    QLabel {
-                                        font-size: 16px;
-                                        font-weight: bold;
-                                        color: white;
-                                        padding: 10px;
-                                        background-color: #e67e22;
-                                        border-radius: 6px;
-                                        margin-bottom: 10px;
-                                    }
-                                """)
-
-                                detection_status.setText("⚠️ No objects detected")
-                                detection_status.setStyleSheet("font-size: 13px; color: #e67e22; font-weight: bold;")
-                                detection_result.setText(f"🏷️ Detected: None")
-                                confidence_label.setText(f"📈 Confidence: N/A")
-
-                                detection_results = {
-                                    'image_path': output_path,
-                                    'objects': {},
-                                    'count': 0,
-                                    'confidence': 0,
-                                    'class_id': class_id,
-                                    'target_found': False
-                                }
-
-                            # Show results and enable verify button
-                            show_results()
-                            verify_btn.setEnabled(True)
-
-                        except Exception as e:
-                            detection_header.setText("❌ Detection Error")
-                            detection_header.setStyleSheet("""
-                                QLabel {
-                                    font-size: 16px;
-                                    font-weight: bold;
-                                    color: white;
-                                    padding: 10px;
-                                    background-color: #e74c3c;
-                                    border-radius: 6px;
-                                    margin-bottom: 10px;
-                                }
-                            """)
-                            detection_status.setText(f"❌ Error: {str(e)[:50]}")
-                            show_results()
-                            verify_btn.setEnabled(True)
-                            import traceback
-                            traceback.print_exc()
-                    else:
-                        detection_header.setText("⚠️ No YOLO Model Found")
-                        detection_header.setStyleSheet("""
-                            QLabel {
-                                font-size: 16px;
-                                font-weight: bold;
-                                color: white;
-                                padding: 10px;
-                                background-color: #e67e22;
-                                border-radius: 6px;
-                                margin-bottom: 10px;
-                            }
-                        """)
-                        detection_status.setText("⚠️ No model found in yolo_model folder")
-                        show_results()
-                        verify_btn.setEnabled(True)
-
-                except Exception as e:
-                    detection_status.setText(f"❌ Error: {str(e)[:50]}")
-                    show_results()
-                    verify_btn.setEnabled(True)
-                    import traceback
-                    traceback.print_exc()
+            if CAMERA_AVAILABLE:
+                from camera.camera import AutoCaptureFlow
+                capture_runner = AutoCaptureFlow(callback=on_capture_finished)
             else:
+                detection_label.setText("❌ Camera module not available")
+                detection_status.setText("❌ Camera unavailable")
+                show_results()
+                verify_btn.setEnabled(False)
+                retry_btn.setEnabled(False)
+
+        def on_capture_finished(success, message, image_path):
+            nonlocal captured_image_path, detection_results, output_path
+            nonlocal predictions_for_sending, target_detected_successfully, auto_retry_count
+
+            QApplication.processEvents()
+
+            if not success or not image_path:
                 detection_label.setText(f"❌ Capture failed: {message}")
                 detection_status.setText(f"❌ {message}")
                 show_results()
-                verify_btn.setEnabled(True)
+                verify_btn.setEnabled(False)
+                retry_btn.setEnabled(True)
+                return
 
-        # Start camera capture
-        if CAMERA_AVAILABLE:
-            detection_status.setText("📊 Status: Opening camera...")
-            QApplication.processEvents()
+            try:
+                detection_status.setText("📊 Status: Image captured, running AI detection...")
+                QApplication.processEvents()
 
-            # Use AutoCaptureFlow with callback
-            from camera.camera import AutoCaptureFlow
-            AutoCaptureFlow(callback=on_capture_finished)
+                shutil.copy2(image_path, new_capture_path)
 
-            QApplication.processEvents()
-        else:
-            detection_label.setText("❌ Camera module not available")
-            detection_status.setText("❌ Camera unavailable")
-            show_results()
-            verify_btn.setEnabled(True)
+                if os.path.exists(image_path):
+                    os.remove(image_path)
+
+                captured_image_path = new_capture_path
+
+                if not model_path or not os.path.exists(model_path):
+                    detection_header.setText("⚠️ No YOLO Model Found")
+                    detection_header.setStyleSheet("""
+                        QLabel {
+                            font-size: 16px;
+                            font-weight: bold;
+                            color: white;
+                            padding: 10px;
+                            background-color: #e67e22;
+                            border-radius: 6px;
+                            margin-bottom: 10px;
+                        }
+                    """)
+                    detection_status.setText("⚠️ No model found in yolo_model folder")
+                    detection_result.setText("🏷️ Detected: Model unavailable")
+                    confidence_label.setText("📈 Confidence: N/A")
+                    show_results()
+                    verify_btn.setEnabled(False)
+                    retry_btn.setEnabled(True)
+                    return
+
+                from ultralytics import YOLO
+
+                frame = cv2.imread(new_capture_path)
+                model = YOLO(model_path)
+
+                if class_id is not None:
+                    print(f"DEBUG: 🔍 Detecting ONLY class {class_id} for product '{product_name}'")
+                    results = model(frame, conf=0.25, classes=[class_id])
+                else:
+                    print(f"DEBUG: 🔍 Detecting ALL objects for product '{product_name}'")
+                    results = model(frame, conf=0.25)
+
+                detections = results[0]
+
+                predictions_for_sending = []
+                if len(detections.boxes) > 0:
+                    boxes = detections.boxes
+                    if hasattr(boxes, 'xyxy') and hasattr(boxes, 'cls') and hasattr(boxes, 'conf'):
+                        for i in range(len(boxes)):
+                            xyxy = boxes.xyxy[i].cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy[i]
+                            class_id_val = int(
+                                boxes.cls[i].cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls[i])
+                            conf_val = float(
+                                boxes.conf[i].cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf[i])
+                            class_name = detections.names.get(class_id_val, f"class_{class_id_val}")
+
+                            predictions_for_sending.append({
+                                'bbox': xyxy.tolist() if hasattr(xyxy, 'tolist') else xyxy,
+                                'class_id': class_id_val,
+                                'class_name': class_name,
+                                'confidence': conf_val
+                            })
+
+                target_found = has_target_class(detections, class_id)
+                target_detected_successfully = target_found
+
+                annotated_frame = detections.plot()
+                output_path = os.path.join(capture_folder, f"Step_{step_num}_{timestamp}_detected.jpg")
+                cv2.imwrite(output_path, annotated_frame)
+
+                rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                height, width = rgb_frame.shape[:2]
+
+                from PySide6.QtGui import QImage
+                q_img = QImage(rgb_frame.data, width, height, rgb_frame.strides[0], QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(q_img)
+
+                if not pixmap.isNull():
+                    update_detection_pixmap(pixmap)
+
+                if len(detections.boxes) > 0:
+                    boxes = detections.boxes
+                    confidences = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
+
+                    class_counts = {}
+                    if hasattr(detections, 'names') and hasattr(boxes, 'cls'):
+                        class_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
+                        for cid in class_ids:
+                            class_name = detections.names.get(int(cid), f"class_{int(cid)}")
+                            class_counts[class_name] = class_counts.get(class_name, 0) + 1
+
+                    objects_text = ", ".join([f"{k}: {v}" for k, v in class_counts.items()])
+                    avg_confidence = np.mean(confidences) * 100 if len(confidences) > 0 else 0
+
+                    detection_result.setText(f"🏷️ Detected: {objects_text}")
+                    confidence_label.setText(f"📈 Confidence: {avg_confidence:.1f}%")
+
+                    detection_results = {
+                        'image_path': output_path,
+                        'objects': class_counts,
+                        'count': len(boxes),
+                        'confidence': float(avg_confidence),
+                        'class_id': class_id,
+                        'target_found': target_found
+                    }
+                else:
+                    detection_result.setText("🏷️ Detected: None")
+                    confidence_label.setText("📈 Confidence: N/A")
+
+                    detection_results = {
+                        'image_path': output_path,
+                        'objects': {},
+                        'count': 0,
+                        'confidence': 0,
+                        'class_id': class_id,
+                        'target_found': False
+                    }
+
+                if target_found:
+                    target_detected_successfully = True
+
+                    detection_header.setText("✅ Target Detected")
+                    detection_header.setStyleSheet("""
+                        QLabel {
+                            font-size: 16px;
+                            font-weight: bold;
+                            color: white;
+                            padding: 10px;
+                            background-color: #27ae60;
+                            border-radius: 6px;
+                            margin-bottom: 10px;
+                        }
+                    """)
+                    detection_status.setText("✅ Target class detected")
+                    detection_status.setStyleSheet("font-size: 13px; color: #27ae60; font-weight: bold;")
+
+                    if predictions_for_sending:
+                        if calibration and calibration.is_calibrated:
+                            coord_status_label.setText("📤 Converting to world coordinates...")
+                            coord_status_label.setStyleSheet(
+                                "font-size: 12px; color: #f39c12; padding: 5px; background-color: #fff3e0; border-radius: 3px; font-weight: bold;"
+                            )
+                        else:
+                            coord_status_label.setText("📤 Using pixel coordinates...")
+                            coord_status_label.setStyleSheet(
+                                "font-size: 12px; color: #7f8c8d; padding: 5px; background-color: #f0f0f0; border-radius: 3px;"
+                            )
+
+                        QApplication.processEvents()
+                        success_sent = PipelineRunner.send_coordinates_to_server(predictions_for_sending, calibration)
+
+                        if success_sent:
+                            coord_status_label.setText("✅ Target coordinates sent")
+                            coord_status_label.setStyleSheet(
+                                "font-size: 12px; color: #27ae60; padding: 5px; background-color: #e8f8ef; border-radius: 3px; font-weight: bold;"
+                            )
+                        else:
+                            coord_status_label.setText("❌ Failed to send target coordinates")
+                            coord_status_label.setStyleSheet(
+                                "font-size: 12px; color: #e74c3c; padding: 5px; background-color: #ffebee; border-radius: 3px; font-weight: bold;"
+                            )
+
+                    show_results()
+                    verify_btn.setEnabled(True)
+                    retry_btn.setEnabled(False)
+                    return
+
+                if auto_retry_count < max_auto_retry:
+                    auto_retry_count += 1
+                    target_detected_successfully = False
+
+                    detection_header.setText("🔄 Target Not Found - Auto Retrying")
+                    detection_header.setStyleSheet("""
+                        QLabel {
+                            font-size: 16px;
+                            font-weight: bold;
+                            color: white;
+                            padding: 10px;
+                            background-color: #f39c12;
+                            border-radius: 6px;
+                            margin-bottom: 10px;
+                        }
+                    """)
+                    detection_status.setText(
+                        f"⚠️ Target not found, auto retrying... ({auto_retry_count}/{max_auto_retry})")
+                    detection_status.setStyleSheet("font-size: 13px; color: #f39c12; font-weight: bold;")
+                    coord_status_label.setText("📤 Coordinates not sent")
+                    coord_status_label.setStyleSheet(
+                        "font-size: 12px; color: #7f8c8d; padding: 5px; background-color: #f0f0f0; border-radius: 3px;"
+                    )
+
+                    QApplication.processEvents()
+                    detection_label.clear()
+                    verify_btn.setEnabled(False)
+                    retry_btn.setEnabled(False)
+                    cleanup_capture_runner()
+                    start_detection_capture("🔄 Auto retry detection...")
+                    return
+
+                detection_header.setText(f"❌ No Target Class Detected")
+                detection_header.setStyleSheet("""
+                    QLabel {
+                        font-size: 16px;
+                        font-weight: bold;
+                        color: white;
+                        padding: 10px;
+                        background-color: #e74c3c;
+                        border-radius: 6px;
+                        margin-bottom: 10px;
+                    }
+                """)
+                detection_status.setText("❌ Target class not detected after auto retry")
+                detection_status.setStyleSheet("font-size: 13px; color: #e74c3c; font-weight: bold;")
+                coord_status_label.setText("📤 Coordinates not sent")
+                coord_status_label.setStyleSheet(
+                    "font-size: 12px; color: #e74c3c; padding: 5px; background-color: #ffebee; border-radius: 3px; font-weight: bold;"
+                )
+
+                show_results()
+                verify_btn.setEnabled(False)
+                retry_btn.setEnabled(True)
+
+            except Exception as e:
+                detection_header.setText("❌ Detection Error")
+                detection_header.setStyleSheet("""
+                    QLabel {
+                        font-size: 16px;
+                        font-weight: bold;
+                        color: white;
+                        padding: 10px;
+                        background-color: #e74c3c;
+                        border-radius: 6px;
+                        margin-bottom: 10px;
+                    }
+                """)
+                detection_status.setText(f"❌ Error: {str(e)[:50]}")
+                detection_status.setStyleSheet("font-size: 13px; color: #e74c3c; font-weight: bold;")
+                coord_status_label.setText("📤 Coordinates not sent")
+                coord_status_label.setStyleSheet(
+                    "font-size: 12px; color: #e74c3c; padding: 5px; background-color: #ffebee; border-radius: 3px; font-weight: bold;"
+                )
+                show_results()
+                verify_btn.setEnabled(False)
+                retry_btn.setEnabled(True)
+
+                import traceback
+                traceback.print_exc()
+
+        start_detection_capture()
+
+        def on_retry_detection():
+            nonlocal manual_retry_count, target_detected_successfully, auto_retry_count
+            nonlocal predictions_for_sending, detection_results, output_path, captured_image_path
+
+            cleanup_capture_runner()
+
+            manual_retry_count += 1
+            auto_retry_count = 0
+            target_detected_successfully = False
+            predictions_for_sending = []
+            detection_results = None
+            output_path = None
+            captured_image_path = None
+
+            verify_btn.setEnabled(False)
+            retry_btn.setEnabled(False)
+            detection_label.clear()
+
+            print(f"🔄 Manual retry detection triggered ({manual_retry_count})")
+            start_detection_capture(f"🔄 Manual retry detection... ({manual_retry_count})")
 
         def on_verify():
-            """Save results, show image from Capture/Block_x folder, and send coordinates"""
             nonlocal captured_image_path, detection_results, output_path
+            nonlocal target_detected_successfully
 
-            # Save the new capture results to selection
+            if not target_detected_successfully:
+                QMessageBox.warning(
+                    parent_widget,
+                    "⚠️ Target Not Detected",
+                    f"Cannot continue because target class was not detected.\n\n"
+                    f"The system already retried automatically once.\n"
+                    f"Please cancel and try again."
+                )
+                return
+
             if captured_image_path and os.path.exists(captured_image_path):
                 selection['pipeline_capture_path'] = captured_image_path
             if output_path and os.path.exists(output_path):
@@ -3130,29 +3236,23 @@ class PipelineRunner:
             if detection_results:
                 selection['pipeline_detection_results'] = detection_results
 
-            # ===== SEND COORDINATES TO SERVER =====
             coordinates_sent = False
             coord_string = ""
 
             try:
-                # Construct path to BoxesData folder
-                recipe_folder = config_manager.get_recipe_folder(recipe_name)
-                boxes_folder = os.path.join(recipe_folder, "BoxesData", f"Block_{block_id}")
+                recipe_folder_local = config_manager.get_recipe_folder(recipe_name)
+                boxes_folder = os.path.join(recipe_folder_local, "BoxesData", f"Block_{block_id}")
 
-                # Find the most recent box_world JSON file
                 if os.path.exists(boxes_folder):
                     import glob
                     json_files = glob.glob(os.path.join(boxes_folder, "box_world_*.json"))
                     if json_files:
-                        # Get the most recent file
                         latest_json = max(json_files, key=os.path.getmtime)
                         print(f"📂 Found box data file: {latest_json}")
 
-                        # Read the JSON file
                         with open(latest_json, 'r') as f:
                             box_data = json.load(f)
 
-                        # Format coordinates as string: -23.62_10.11,23.27_10.35,...
                         coord_parts = []
                         for point in box_data:
                             if len(point) >= 2:
@@ -3161,14 +3261,11 @@ class PipelineRunner:
                         if coord_parts:
                             coord_string = ",".join(coord_parts)
 
-                            # Send to server using heartbeat manager
                             if PipelineRunner._heartbeat_manager and PipelineRunner._heartbeat_manager.is_connected():
                                 success = PipelineRunner._heartbeat_manager.send_data(coord_string + "\n")
                                 if success:
                                     print(f"✅ Sent box coordinates: {coord_string}")
                                     coordinates_sent = True
-                                else:
-                                    print("❌ Failed to send box coordinates")
                             else:
                                 print("⚠️ Heartbeat manager not connected, attempting to reconnect...")
                                 PipelineRunner._ensure_heartbeat_connected()
@@ -3177,24 +3274,20 @@ class PipelineRunner:
                                     if success:
                                         print(f"✅ Sent box coordinates after reconnect: {coord_string}")
                                         coordinates_sent = True
-                    else:
-                        print(f"⚠️ No box_world JSON files found in {boxes_folder}")
             except Exception as e:
                 print(f"❌ Error sending box coordinates: {e}")
                 import traceback
                 traceback.print_exc()
 
-            # Close the current dialog
             dialog.accept()
 
-            # ===== SHOW IMAGE FROM recipe_folder/Capture/Block_x =====
             image_to_show = None
 
             try:
                 import glob
 
-                recipe_folder = config_manager.get_recipe_folder(recipe_name)
-                block_capture_folder = os.path.join(recipe_folder, "Capture", f"Block_{block_id}")
+                recipe_folder_local = config_manager.get_recipe_folder(recipe_name)
+                block_capture_folder = os.path.join(recipe_folder_local, "Capture", f"Block_{block_id}")
 
                 print(f"🔍 Looking for image in block capture folder: {block_capture_folder}")
 
@@ -3206,7 +3299,6 @@ class PipelineRunner:
                 all_files = bmp_files + png_files + jpg_files + jpeg_files
 
                 if all_files:
-                    # 只拿最新那张
                     all_files.sort(key=os.path.getmtime, reverse=True)
                     image_to_show = all_files[0]
                     print(f"✅ Showing image from block folder: {image_to_show}")
@@ -3224,6 +3316,8 @@ class PipelineRunner:
                 saved_image_dialog.showFullScreen()
 
                 saved_layout = QVBoxLayout(saved_image_dialog)
+                saved_layout.setContentsMargins(16, 16, 16, 16)
+                saved_layout.setSpacing(15)
 
                 saved_header = QLabel(f"📸 Step {step_num}: Assembly Result")
                 saved_header.setStyleSheet("""
@@ -3240,62 +3334,190 @@ class PipelineRunner:
                 saved_header.setAlignment(Qt.AlignCenter)
                 saved_layout.addWidget(saved_header)
 
-                # ===== COORDINATE STATUS =====
-                # coord_status = QLabel()
-                # if coordinates_sent:
-                #     # coord_status.setText(f"✅ Coordinates sent to 127.0.0.1:8888\n{coord_string}")
-                #     # coord_status.setStyleSheet("""
-                #     #     QLabel {
-                #     #         font-size: 14px;
-                #     #         color: #27ae60;
-                #     #         padding: 15px;
-                #     #         background-color: #e8f8ef;
-                #     #         border-radius: 8px;
-                #     #         margin: 10px;
-                #     #         font-weight: bold;
-                #     #     }
-                #     # """)
-                # else:
-                #     coord_status.setText("⚠️ Failed to send coordinates to server")
-                #     coord_status.setStyleSheet("""
-                #         QLabel {
-                #             font-size: 14px;
-                #             color: #e74c3c;
-                #             padding: 15px;
-                #             background-color: #ffebee;
-                #             border-radius: 8px;
-                #             margin: 10px;
-                #             font-weight: bold;
-                #         }
-                #     """)
-                # coord_status.setWordWrap(True)
-                # saved_layout.addWidget(coord_status)
+                has_video = uploaded_video_path and os.path.exists(uploaded_video_path)
 
-                # ===== IMAGE DISPLAY =====
-                saved_image_label = QLabel()
-                saved_image_label.setAlignment(Qt.AlignCenter)
-                saved_image_label.setMinimumHeight(400)
-                saved_image_label.setStyleSheet("""
-                    QLabel {
-                        border: 3px solid #3498db;
-                        border-radius: 8px;
-                        background-color: #f8f9fa;
-                        padding: 10px;
-                    }
-                """)
+                if has_video:
+                    from PySide6.QtCore import QUrl
+                    from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+                    from PySide6.QtMultimediaWidgets import QVideoWidget
 
-                pixmap = QPixmap(image_to_show)
-                if not pixmap.isNull():
-                    scaled = pixmap.scaled(700, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    saved_image_label.setPixmap(scaled)
-                    print(f"✅ Showing image: {image_to_show}")
+                    splitter_result = QSplitter(Qt.Horizontal)
+                    splitter_result.setHandleWidth(2)
+                    splitter_result.setStyleSheet("""
+                        QSplitter::handle {
+                            background-color: #dfe6e9;
+                        }
+                    """)
+
+                    # 左小右大
+                    image_width = 560
+                    image_height = 460
+                    video_width = 720
+                    video_height = 520
+
+                    # ===== LEFT: IMAGE PANEL =====
+                    left_result_widget = QWidget()
+                    left_result_layout = QVBoxLayout(left_result_widget)
+                    left_result_layout.setContentsMargins(10, 10, 10, 10)
+                    left_result_layout.setSpacing(10)
+
+                    image_title = QLabel("🖼️ Assembly Image")
+                    image_title.setAlignment(Qt.AlignCenter)
+                    image_title.setStyleSheet("""
+                        QLabel {
+                            font-size: 16px;
+                            font-weight: bold;
+                            color: #2c3e50;
+                            background-color: #ecf0f1;
+                            padding: 10px;
+                            border-radius: 6px;
+                        }
+                    """)
+                    left_result_layout.addWidget(image_title)
+
+                    image_frame = QFrame()
+                    image_frame.setMinimumSize(image_width + 40, image_height + 40)
+                    image_frame.setStyleSheet("""
+                        QFrame {
+                            border: 3px solid #3498db;
+                            border-radius: 8px;
+                            background-color: #f8f9fa;
+                        }
+                    """)
+                    image_frame_layout = QVBoxLayout(image_frame)
+                    image_frame_layout.setContentsMargins(10, 10, 10, 10)
+
+                    saved_image_label = QLabel()
+                    saved_image_label.setAlignment(Qt.AlignCenter)
+                    saved_image_label.setMinimumSize(image_width, image_height)
+                    saved_image_label.setStyleSheet("""
+                        QLabel {
+                            background-color: #f8f9fa;
+                            border: none;
+                        }
+                    """)
+
+                    pixmap = QPixmap(image_to_show)
+                    if not pixmap.isNull():
+                        scaled = pixmap.scaled(
+                            image_width, image_height,
+                            Qt.KeepAspectRatio,
+                            Qt.SmoothTransformation
+                        )
+                        saved_image_label.setPixmap(scaled)
+                    else:
+                        saved_image_label.setText("❌ Cannot load image")
+
+                    image_frame_layout.addWidget(saved_image_label, 1)
+                    left_result_layout.addWidget(image_frame, 1)
+
+                    # ===== RIGHT: VIDEO PANEL =====
+                    right_result_widget = QWidget()
+                    right_result_layout = QVBoxLayout(right_result_widget)
+                    right_result_layout.setContentsMargins(10, 10, 10, 10)
+                    right_result_layout.setSpacing(10)
+
+                    video_title = QLabel("🎬 Uploaded Video")
+                    video_title.setAlignment(Qt.AlignCenter)
+                    video_title.setStyleSheet("""
+                        QLabel {
+                            font-size: 16px;
+                            font-weight: bold;
+                            color: #2c3e50;
+                            background-color: #ecf0f1;
+                            padding: 10px;
+                            border-radius: 6px;
+                        }
+                    """)
+                    right_result_layout.addWidget(video_title)
+
+                    video_frame = QFrame()
+                    video_frame.setMinimumSize(video_width + 40, video_height + 80)
+                    video_frame.setStyleSheet("""
+                        QFrame {
+                            border: 3px solid #8e44ad;
+                            border-radius: 8px;
+                            background-color: #f8f9fa;
+                        }
+                    """)
+                    video_frame_layout = QVBoxLayout(video_frame)
+                    video_frame_layout.setContentsMargins(10, 10, 10, 10)
+                    video_frame_layout.setSpacing(8)
+
+                    video_widget = QVideoWidget()
+                    video_widget.setMinimumSize(video_width, video_height)
+                    video_widget.setStyleSheet("""
+                        background-color: black;
+                        border-radius: 6px;
+                    """)
+
+                    video_info = QLabel(os.path.basename(uploaded_video_path))
+                    video_info.setAlignment(Qt.AlignCenter)
+                    video_info.setStyleSheet("""
+                        QLabel {
+                            font-size: 12px;
+                            color: #7f8c8d;
+                            padding: 8px;
+                            background-color: #f8f9fa;
+                            border-radius: 4px;
+                        }
+                    """)
+
+                    video_frame_layout.addWidget(video_widget, 1)
+                    video_frame_layout.addWidget(video_info, 0)
+
+                    right_result_layout.addWidget(video_frame, 1)
+
+                    splitter_result.addWidget(left_result_widget)
+                    splitter_result.addWidget(right_result_widget)
+
+                    # 右边视频更大
+                    splitter_result.setSizes([580, 760])
+
+                    saved_layout.addWidget(splitter_result, 1)
+
+                    player = QMediaPlayer(saved_image_dialog)
+                    audio = QAudioOutput(saved_image_dialog)
+                    player.setAudioOutput(audio)
+                    player.setVideoOutput(video_widget)
+                    player.setSource(QUrl.fromLocalFile(uploaded_video_path))
+                    audio.setVolume(0.0)
+
+                    def loop_uploaded_video(status):
+                        from PySide6.QtMultimedia import QMediaPlayer
+                        if status == QMediaPlayer.EndOfMedia:
+                            player.setPosition(0)
+                            player.play()
+
+                    player.mediaStatusChanged.connect(loop_uploaded_video)
+                    player.play()
+
+                    saved_image_dialog.finished.connect(lambda _: player.stop())
+
                 else:
-                    saved_image_label.setText("❌ Cannot load image")
-                    print(f"❌ Failed to load image: {image_to_show}")
+                    saved_image_label = QLabel()
+                    saved_image_label.setAlignment(Qt.AlignCenter)
+                    saved_image_label.setMinimumHeight(400)
+                    saved_image_label.setStyleSheet("""
+                        QLabel {
+                            border: 3px solid #3498db;
+                            border-radius: 8px;
+                            background-color: #f8f9fa;
+                            padding: 10px;
+                        }
+                    """)
 
-                saved_layout.addWidget(saved_image_label)
+                    pixmap = QPixmap(image_to_show)
+                    if not pixmap.isNull():
+                        scaled = pixmap.scaled(700, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        saved_image_label.setPixmap(scaled)
+                        print(f"✅ Showing image: {image_to_show}")
+                    else:
+                        saved_image_label.setText("❌ Cannot load image")
+                        print(f"❌ Failed to load image: {image_to_show}")
 
-                # ===== COORDINATES DISPLAY =====
+                    saved_layout.addWidget(saved_image_label)
+
                 if coordinates_sent:
                     coord_display = QLabel(f"📊 Sent Coordinates:\n{coord_string}")
                     coord_display.setStyleSheet("""
@@ -3312,7 +3534,6 @@ class PipelineRunner:
                     coord_display.setWordWrap(True)
                     saved_layout.addWidget(coord_display)
 
-                # ===== CONTINUE BUTTON =====
                 close_btn = QPushButton("Continue")
                 close_btn.setStyleSheet("""
                     QPushButton {
@@ -3350,14 +3571,12 @@ class PipelineRunner:
                     error_msg
                 )
 
+        retry_btn.clicked.connect(on_retry_detection)
         verify_btn.clicked.connect(on_verify)
 
         try:
-            # Show dialog
             result = dialog.exec()
 
-            # ===== DECREMENT HEARTBEAT REFERENCE COUNT =====
-            # Each Assembly step should release its reference when done
             if PipelineRunner._heartbeat_manager is not None:
                 PipelineRunner._heartbeat_reference_count -= 1
                 print(
@@ -3366,16 +3585,15 @@ class PipelineRunner:
             return result == QDialog.Accepted
 
         except Exception as e:
-            # Make sure to decrement even on error
             if PipelineRunner._heartbeat_manager is not None:
                 PipelineRunner._heartbeat_reference_count -= 1
                 print(
                     f"🔌 Assembly step {step_num} released heartbeat on error, reference count: {PipelineRunner._heartbeat_reference_count}")
             raise e
         finally:
-            # Clean up timer
             if loading_timer.isActive():
                 loading_timer.stop()
+            cleanup_capture_runner()
 
     @staticmethod
     def _notify_main_page_refresh_mes(parent_widget, force=False):

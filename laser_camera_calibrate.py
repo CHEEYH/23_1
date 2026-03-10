@@ -579,7 +579,8 @@ class MainWindow(QMainWindow):
         self.calibration_file = None  # Will be set after folder setup
 
         self.setWindowTitle("Laser Camera Calibration Tool")
-        self.resize(1100, 850)
+        #self.resize(1100, 850)
+        self.showFullScreen()
 
         # Initialize Heartbeat Manager
         self.heartbeat_manager = HeartbeatManager()
@@ -620,37 +621,128 @@ class MainWindow(QMainWindow):
         # Set calibration file path
         self.calibration_file = os.path.join(self.capture_folder, "calibration.json")
 
+        # Create main widget and horizontal layout
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        main_layout = QHBoxLayout(main_widget)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(10)
+
+        # ---------- LEFT PANEL (Controls) ----------
+        left_panel = QWidget()
+        left_panel.setMaximumWidth(450)  # Limit width of left panel
+        left_panel.setMinimumWidth(350)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(5, 5, 5, 5)
+        left_layout.setSpacing(10)
+
+        # At the beginning of left_layout, before adding tcp_group
+        title_widget = QWidget()
+        title_widget.setStyleSheet("""
+                    QWidget {
+                        background-color: #2d2d2d;
+                        border-radius: 5px;
+                    }
+                """)
+        title_layout = QHBoxLayout(title_widget)
+        title_layout.setContentsMargins(10, 5, 10, 5)
+
+        app_title = QLabel("🔬 Laser Camera Calibration Tool")
+        app_title.setStyleSheet("""
+                    QLabel {
+                        color: white;
+                        font-size: 18px;
+                        font-weight: bold;
+                        padding: 8px;
+                    }
+                """)
+        title_layout.addWidget(app_title)
+        title_layout.addStretch()
+
+        left_layout.addWidget(title_widget)
+
         # ---------- Calibration Controls ----------
         self.calibration_group = QGroupBox("Calibration Settings")
+        self.calibration_group.setStyleSheet("""
+                    QGroupBox {
+                        font-weight: bold;
+                        border: 2px solid #cccccc;
+                        border-radius: 5px;
+                        margin-top: 1ex;
+                        padding-top: 10px;
+                    }
+                    QGroupBox::title {
+                        subcontrol-origin: margin;
+                        left: 10px;
+                        padding: 0 5px 0 5px;
+                    }
+                """)
 
         self.calibration_progress = QProgressBar()
         self.calibration_progress.setRange(0, self.calibration_points_needed)
         self.calibration_progress.setValue(0)
         self.calibration_progress.setTextVisible(True)
         self.calibration_progress.setFormat("Calibration points: %v/%m")
+        self.calibration_progress.setMinimumHeight(25)
 
         self.calibration_status = QLabel("Not calibrated - 0/9 points")
         self.calibration_status.setStyleSheet("color: #666; font-weight: bold;")
+        self.calibration_status.setWordWrap(True)
 
         calibration_buttons = QHBoxLayout()
 
         self.save_calibration_btn = QPushButton("💾 Save Calibration")
         self.save_calibration_btn.clicked.connect(self.save_calibration)
         self.save_calibration_btn.setEnabled(False)
-        self.save_calibration_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+        self.save_calibration_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                        font-weight: bold;
+                        padding: 8px;
+                        border-radius: 4px;
+                    }
+                    QPushButton:hover {
+                        background-color: #45a049;
+                    }
+                    QPushButton:disabled {
+                        background-color: #cccccc;
+                    }
+                """)
 
         self.load_calibration_btn = QPushButton("📂 Load Calibration")
         self.load_calibration_btn.clicked.connect(self.load_calibration)
-        self.load_calibration_btn.setStyleSheet("background-color: #2196F3; color: white;")
+        self.load_calibration_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2196F3;
+                        color: white;
+                        font-weight: bold;
+                        padding: 8px;
+                        border-radius: 4px;
+                    }
+                    QPushButton:hover {
+                        background-color: #1976D2;
+                    }
+                """)
 
         self.clear_calibration_btn = QPushButton("🗑️ Clear Calibration")
         self.clear_calibration_btn.clicked.connect(self.clear_calibration)
-        self.clear_calibration_btn.setStyleSheet("background-color: #f44336; color: white;")
+        self.clear_calibration_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f44336;
+                        color: white;
+                        font-weight: bold;
+                        padding: 8px;
+                        border-radius: 4px;
+                    }
+                    QPushButton:hover {
+                        background-color: #d32f2f;
+                    }
+                """)
 
         calibration_buttons.addWidget(self.save_calibration_btn)
         calibration_buttons.addWidget(self.load_calibration_btn)
         calibration_buttons.addWidget(self.clear_calibration_btn)
-        calibration_buttons.addStretch()
 
         calibration_layout = QVBoxLayout()
         calibration_layout.addWidget(self.calibration_progress)
@@ -660,7 +752,20 @@ class MainWindow(QMainWindow):
 
         # ---------- Coordinate Display ----------
         self.coord_group = QGroupBox("Coordinates")
-        self.coord_group.setMaximumHeight(100)
+        self.coord_group.setStyleSheet("""
+                    QGroupBox {
+                        font-weight: bold;
+                        border: 2px solid #cccccc;
+                        border-radius: 5px;
+                        margin-top: 1ex;
+                        padding-top: 10px;
+                    }
+                    QGroupBox::title {
+                        subcontrol-origin: margin;
+                        left: 10px;
+                        padding: 0 5px 0 5px;
+                    }
+                """)
 
         self.pixel_coord_label = QLabel("Pixel: (?, ?)")
         self.pixel_coord_label.setStyleSheet("color: #2196F3; font-weight: bold;")
@@ -674,20 +779,36 @@ class MainWindow(QMainWindow):
         coord_layout = QHBoxLayout()
         coord_layout.addWidget(self.pixel_coord_label)
         coord_layout.addWidget(self.world_coord_label)
-        coord_layout.addStretch()
         coord_layout.addWidget(self.calibration_point_label)
+        coord_layout.addStretch()
 
         self.coord_group.setLayout(coord_layout)
 
         # ---------- TCP Connection Settings ----------
-        self.tcp_group = QGroupBox("TCP/IP Connection Settings (with Heartbeat)")
+        self.tcp_group = QGroupBox("TCP/IP Connection Settings")
+        self.tcp_group.setStyleSheet("""
+                    QGroupBox {
+                        font-weight: bold;
+                        border: 2px solid #cccccc;
+                        border-radius: 5px;
+                        margin-top: 1ex;
+                        padding-top: 10px;
+                    }
+                    QGroupBox::title {
+                        subcontrol-origin: margin;
+                        left: 10px;
+                        padding: 0 5px 0 5px;
+                    }
+                """)
 
         self.host_edit = QLineEdit("127.0.0.1")
         self.host_edit.setPlaceholderText("Enter host IP address")
+        self.host_edit.setMinimumHeight(30)
 
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(8888)
+        self.port_spin.setMinimumHeight(30)
 
         self.heartbeat_interval_spin = QSpinBox()
         self.heartbeat_interval_spin.setRange(1, 60)
@@ -696,22 +817,25 @@ class MainWindow(QMainWindow):
 
         self.connect_btn = QPushButton("🔌 Connect")
         self.connect_btn.clicked.connect(self.toggle_tcp_connection)
+        self.connect_btn.setMinimumHeight(40)
         self.connect_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                font-weight: bold;
-                padding: 5px 15px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                        font-weight: bold;
+                        padding: 8px 15px;
+                        border-radius: 4px;
+                        font-size: 14px;
+                    }
+                    QPushButton:hover {
+                        background-color: #45a049;
+                    }
+                """)
 
         # Connection status label
         self.connection_status_label = QLabel("Status: Disconnected")
-        self.connection_status_label.setStyleSheet("color: #666; font-style: italic;")
+        self.connection_status_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        self.connection_status_label.setWordWrap(True)
 
         # Heartbeat status label
         self.heartbeat_status_label = QLabel("Heartbeat: Not active")
@@ -719,78 +843,72 @@ class MainWindow(QMainWindow):
 
         # TCP settings layout
         tcp_form = QFormLayout()
+        tcp_form.setSpacing(8)
         tcp_form.addRow("Host:", self.host_edit)
         tcp_form.addRow("Port:", self.port_spin)
-        tcp_form.addRow("Heartbeat Interval:", self.heartbeat_interval_spin)
 
         tcp_buttons = QHBoxLayout()
         tcp_buttons.addWidget(self.connect_btn)
-        tcp_buttons.addStretch()
 
         tcp_layout = QVBoxLayout()
         tcp_layout.addLayout(tcp_form)
         tcp_layout.addLayout(tcp_buttons)
         tcp_layout.addWidget(self.connection_status_label)
-        tcp_layout.addWidget(self.heartbeat_status_label)
         self.tcp_group.setLayout(tcp_layout)
-
-        # ---------- Image Display Label ----------
-        self.image_label = ClickableImageLabel()
-        self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setText("Waiting for coordinates to capture image...")
-        self.image_label.setStyleSheet("""
-            QLabel {
-                border: 2px dashed #ccc;
-                border-radius: 5px;
-                background-color: #f5f5f5;
-                min-height: 400px;
-            }
-        """)
-        self.image_label.clicked.connect(self.on_image_clicked)
-
-        # ---------- Image Info Label ----------
-        self.image_info_label = QLabel("")
-        self.image_info_label.setAlignment(Qt.AlignCenter)
-        self.image_info_label.setStyleSheet("color: #666; font-size: 12px;")
-
-        # ---------- Status Bar ----------
-        self.status_label = QLabel("Ready - Connect to server to start")
-        self.statusBar().addWidget(self.status_label)
 
         # ---------- TCP Messages Display (Scrollable) ----------
         self.tcp_messages_group = QGroupBox("TCP Messages & Calibration Log")
-
-        # Create scroll area for messages
-        self.tcp_messages_scroll = QScrollArea()
-        self.tcp_messages_scroll.setWidgetResizable(True)
-        self.tcp_messages_scroll.setMinimumHeight(150)
-        self.tcp_messages_scroll.setMaximumHeight(250)
+        self.tcp_messages_group.setStyleSheet("""
+                    QGroupBox {
+                        font-weight: bold;
+                        border: 2px solid #cccccc;
+                        border-radius: 5px;
+                        margin-top: 1ex;
+                        padding-top: 10px;
+                    }
+                    QGroupBox::title {
+                        subcontrol-origin: margin;
+                        left: 10px;
+                        padding: 0 5px 0 5px;
+                    }
+                """)
 
         # Create text edit for messages with scrollbars
         self.tcp_messages_display = QTextEdit()
         self.tcp_messages_display.setReadOnly(True)
-        self.tcp_messages_display.setLineWrapMode(QTextEdit.NoWrap)
+        self.tcp_messages_display.setLineWrapMode(QTextEdit.WidgetWidth)
         self.tcp_messages_display.setStyleSheet("""
-            QTextEdit {
-                background-color: #f8f9fa;
-                border: none;
-                font-family: monospace;
-                font-size: 11px;
-                color: #495057;
-                padding: 5px;
-            }
-        """)
-
-        # Set the text edit as the scroll area's widget
-        self.tcp_messages_scroll.setWidget(self.tcp_messages_display)
+                    QTextEdit {
+                        background-color: #f8f9fa;
+                        border: 1px solid #ddd;
+                        border-radius: 4px;
+                        font-family: monospace;
+                        font-size: 11px;
+                        color: #495057;
+                        padding: 8px;
+                    }
+                """)
+        self.tcp_messages_display.setMinimumHeight(200)
 
         # Clear messages button
         self.clear_messages_btn = QPushButton("🗑️ Clear Messages")
         self.clear_messages_btn.clicked.connect(self.clear_tcp_messages)
         self.clear_messages_btn.setMaximumWidth(150)
+        self.clear_messages_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #6c757d;
+                        color: white;
+                        font-weight: bold;
+                        padding: 6px;
+                        border-radius: 4px;
+                    }
+                    QPushButton:hover {
+                        background-color: #5a6268;
+                    }
+                """)
 
         tcp_messages_layout = QVBoxLayout()
-        tcp_messages_layout.addWidget(self.tcp_messages_scroll)
+        tcp_messages_layout.addWidget(self.tcp_messages_display)
 
         messages_footer = QHBoxLayout()
         messages_footer.addStretch()
@@ -799,28 +917,158 @@ class MainWindow(QMainWindow):
         tcp_messages_layout.addLayout(messages_footer)
         self.tcp_messages_group.setLayout(tcp_messages_layout)
 
-        # ---------- Layout ----------
-        # Main layout
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(self.tcp_group)
-        main_layout.addWidget(self.calibration_group)
-        main_layout.addWidget(self.coord_group)
-        main_layout.addWidget(self.image_label, 1)  # Expand image area
-        main_layout.addWidget(self.image_info_label)
-        main_layout.addWidget(self.tcp_messages_group)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
+        # Add all control groups to left panel
+        left_layout.addWidget(self.tcp_group)
+        left_layout.addWidget(self.calibration_group)
+        left_layout.addWidget(self.coord_group)
+        left_layout.addWidget(self.tcp_messages_group, 1)  # Give it stretch factor
 
-        container = QWidget()
-        container.setLayout(main_layout)
-        self.setCentralWidget(container)
+        # ---------- RIGHT PANEL (Image Display) ----------
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(5, 5, 5, 5)
+        right_layout.setSpacing(5)
+
+        # Create a container for image and close button
+        image_container = QWidget()
+        image_container_layout = QVBoxLayout(image_container)
+        image_container_layout.setContentsMargins(0, 0, 0, 0)
+        image_container_layout.setSpacing(5)
+
+        # Close button container (top-right corner)
+        close_button_container = QWidget()
+        close_button_layout = QHBoxLayout(close_button_container)
+        close_button_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Add stretch to push button to the right
+        close_button_layout.addStretch()
+
+        # Close button
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setFixedSize(50, 40)
+        self.close_btn.clicked.connect(self.close_application)
+        self.close_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f44336;
+                        color: white;
+                        font-weight: bold;
+                        font-size: 14px;
+                        border: none;
+                        border-radius: 5px;
+                        padding: 8px 15px;
+                    }
+                    QPushButton:hover {
+                        background-color: #d32f2f;
+                    }
+                    QPushButton:pressed {
+                        background-color: #b71c1c;
+                    }
+                """)
+        close_button_layout.addWidget(self.close_btn)
+
+        image_container_layout.addWidget(close_button_container)
+
+        # Image Display Label
+        self.image_label = ClickableImageLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setText("Waiting for coordinates to capture image...")
+        self.image_label.setStyleSheet("""
+                    QLabel {
+                        border: 2px solid #4CAF50;
+                        border-radius: 5px;
+                        background-color: #2d2d2d;
+                        color: #ffffff;
+                        font-size: 16px;
+                        min-height: 600px;
+                    }
+                """)
+        self.image_label.setMinimumSize(800, 600)
+        self.image_label.clicked.connect(self.on_image_clicked)
+
+        image_container_layout.addWidget(self.image_label, 1)  # Give it stretch factor
+
+        # Image Info Label
+        self.image_info_label = QLabel("")
+        self.image_info_label.setAlignment(Qt.AlignCenter)
+        self.image_info_label.setStyleSheet("""
+                    QLabel {
+                        color: #666;
+                        font-size: 12px;
+                        padding: 5px;
+                        background-color: #f0f0f0;
+                        border-radius: 3px;
+                    }
+                """)
+        self.image_info_label.setMinimumHeight(30)
+
+        image_container_layout.addWidget(self.image_info_label)
+
+        right_layout.addWidget(image_container)
+
+        # Add panels to main layout
+        main_layout.addWidget(left_panel)
+        main_layout.addWidget(right_panel, 1)  # Give right panel stretch factor
+
+        # ---------- Status Bar ----------
+        self.status_label = QLabel("Ready - Connect to server to start")
+        self.statusBar().addWidget(self.status_label)
+        self.statusBar().setStyleSheet("""
+                    QStatusBar {
+                        background-color: #f0f0f0;
+                        color: #333;
+                        font-size: 12px;
+                        padding: 3px;
+                    }
+                """)
 
         # Show capture folder info
         self.update_tcp_messages(f"[System] 📁 Capture folder: {self.capture_folder}")
         self.update_tcp_messages(f"[System] 📁 Calibration file: {self.calibration_file}")
 
-        # NOW auto-load calibration after UI is fully created
+        # Auto-load calibration
         self.auto_load_calibration()
+
+        # Add keyboard shortcut for fullscreen (F11)
+        self.shortcut_fullscreen = QPushButton("Toggle Fullscreen (F11)")
+        self.shortcut_fullscreen.setVisible(False)  # Hidden button for shortcut reference
+
+    def keyPressEvent(self, event):
+        """Handle keyboard events for fullscreen toggle"""
+        if event.key() == Qt.Key_F11:
+            if self.isFullScreen():
+                self.showMaximized()
+            else:
+                self.showFullScreen()
+        elif event.key() == Qt.Key_Escape and self.isFullScreen():
+            self.showMaximized()
+        else:
+            super().keyPressEvent(event)
+
+    def close_application(self):
+        """Close the application with confirmation"""
+        reply = QMessageBox.question(
+            self,
+            "Exit Application",
+            "Are you sure you want to exit the application?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            # Clean up connections before closing
+            if self.is_connected:
+                self.disconnect_tcp()
+
+            # Send C1_CANCEL if calibration is active
+            if self.calibration_active and self.is_connected and self.tcp_socket:
+                try:
+                    self.tcp_socket.sendall("C1_CANCEL".encode('utf-8'))
+                    self.tcp_signals.message_sent.emit("C1_CANCEL")
+                except:
+                    pass
+
+            # Close the application
+            self.close()
 
     def setup_capture_folder(self):
         """Setup capture folder that works on both Windows and Linux (no user prompt)"""

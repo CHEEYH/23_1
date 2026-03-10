@@ -920,7 +920,8 @@ class EditFlowPage(QWidget):
         dialog = ScrewDialog(
             parent=self,
             block_id=str(screw_block.block_id),
-            block_name=f"Block_{screw_block.block_id}"
+            block_name=f"Block_{screw_block.block_id}",
+            initial_config=screw_block.config if isinstance(getattr(screw_block, "config", None), dict) else None
         )
 
         result = dialog.exec()
@@ -932,6 +933,22 @@ class EditFlowPage(QWidget):
 
             screw_block.config = new_config
             print(f"DEBUG assigned config to screw_block {screw_block.block_id}: {screw_block.config}")
+
+            # 更新文字显示
+            screw_count = new_config.get("count", "")
+            screw_type = new_config.get("type", "")
+            if hasattr(screw_block, "text"):
+                if screw_count and screw_type:
+                    screw_block.text.setPlainText(
+                        f"Screw (Block {screw_block.block_id}, {screw_count}x {screw_type})"
+                    )
+                else:
+                    screw_block.text.setPlainText(f"Screw (Block {screw_block.block_id})")
+
+                text_rect = screw_block.text.boundingRect()
+                text_x = (screw_block.block_width - text_rect.width()) / 2
+                text_y = (screw_block.block_height - text_rect.height()) / 2
+                screw_block.text.setPos(text_x, text_y)
 
             self.save_flow()
             return True
@@ -951,16 +968,15 @@ class EditFlowPage(QWidget):
         existing_data = {}
         if hasattr(assembly_block, 'assembly_data') and isinstance(assembly_block.assembly_data, dict):
             existing_data = assembly_block.assembly_data.copy()
+        elif hasattr(assembly_block, 'config') and isinstance(assembly_block.config, dict):
+            existing_data = assembly_block.config.copy()
 
         dialog = AssemblyDialog(
             parent=self,
+            initial_config=existing_data,
             block_id=str(assembly_block.block_id),
             block_name=f"Block_{assembly_block.block_id}"
         )
-
-        # 如果你的 AssemblyDialog 支持加载旧资料，就在这里塞进去
-        if hasattr(dialog, "load_existing_data") and existing_data:
-            dialog.load_existing_data(existing_data)
 
         dialog.setWindowTitle(f"Configure Assembly Block {assembly_block.block_id}")
 
@@ -982,7 +998,7 @@ class EditFlowPage(QWidget):
             assembly_block.assembly_data = new_data
             assembly_block.config = new_data
 
-            total_steps = new_data.get("total_steps", 0)
+            total_steps = int(new_data.get("total_steps", 0))
 
             if hasattr(assembly_block, "text"):
                 if total_steps > 0:
@@ -2320,7 +2336,6 @@ class EditFlowPage(QWidget):
             QMessageBox.warning(self, "⚠️ Warning", "Please select a recipe first!")
             return
 
-        # Create save data
         flow_data = {
             "recipe": config_manager.current_recipe,
             "saved_at": datetime.now().isoformat(),
@@ -2328,8 +2343,7 @@ class EditFlowPage(QWidget):
             "connections": []
         }
 
-        # Assign IDs to Assembly blocks before saving
-        # Assign IDs to blocks before saving
+        # 确保 block_id 都有
         block_id_count = 0
         for block in self.pipeline_blocks:
             if block.name in ["Assembly", "Screw"]:
@@ -2339,7 +2353,7 @@ class EditFlowPage(QWidget):
 
         print(f"DEBUG: Saving {block_id_count} blocks with block IDs")
 
-        # Save pipeline blocks
+        # Save blocks
         for block in self.pipeline_blocks:
             block_data = {
                 "name": block.name,
@@ -2348,30 +2362,25 @@ class EditFlowPage(QWidget):
                 "config": block.config if hasattr(block, 'config') else None
             }
 
-            # Save block_id for Assembly / Screw
             if block.name in ["Assembly", "Screw"]:
                 if hasattr(block, 'block_id') and block.block_id:
                     block_data["block_id"] = str(block.block_id)
                     print(f"DEBUG: Saving block_id {block.block_id} for {block.name}")
 
-            # Save Assembly-specific data
             if block.name == "Assembly":
-                if hasattr(block, 'assembly_data') and block.assembly_data:
+                if hasattr(block, 'assembly_data') and isinstance(block.assembly_data, dict):
                     block_data["assembly_data"] = block.assembly_data
 
-                    if 'selections' in block.assembly_data:
-                        selections = block.assembly_data['selections']
-                        print(f"DEBUG: Saving selections structure for block {block.block_id}:")
-                        print(f"  Type: {type(selections)}")
-                        if isinstance(selections, dict):
-                            print(f"  Keys: {list(selections.keys())}")
-                            for key, value in selections.items():
-                                if key != 'total_steps':
-                                    print(f"  Step {key}: {value.get('product_name', 'Unknown')}")
+                    selections = block.assembly_data.get('selections', {})
+                    print(f"DEBUG: Saving Assembly block {block.block_id}")
+                    print(f"  total_steps = {block.assembly_data.get('total_steps', 0)}")
+                    print(f"  selections type = {type(selections)}")
+                    if isinstance(selections, dict):
+                        print(f"  selections keys = {list(selections.keys())}")
 
             flow_data["blocks"].append(block_data)
 
-        # Save connections (existing code remains same)
+        # Save connections
         for conn in self.connections:
             if hasattr(conn, 'from_block') and hasattr(conn, 'to_block'):
                 try:
@@ -2382,21 +2391,24 @@ class EditFlowPage(QWidget):
                         "to_block": to_index
                     }
                     flow_data["connections"].append(conn_data)
-                except ValueError:
-                    pass  # Skip invalid connections
+                except ValueError as e:
+                    print(
+                        f"WARNING: connection skipped during save: "
+                        f"from={getattr(conn, 'from_block', None)} "
+                        f"to={getattr(conn, 'to_block', None)} "
+                        f"error={e}"
+                    )
 
-        # Save to file
         flows_folder = os.path.join(config_manager.get_current_recipe_folder(), "flows")
         if flows_folder:
             os.makedirs(flows_folder, exist_ok=True)
             flow_file = os.path.join(flows_folder, "pipeline_flow.json")
 
             try:
-                with open(flow_file, 'w') as f:
-                    json.dump(flow_data, f, indent=2)
+                with open(flow_file, 'w', encoding='utf-8') as f:
+                    json.dump(flow_data, f, indent=2, ensure_ascii=False)
                 print(f"DEBUG: Successfully saved flow to {flow_file}")
-                QMessageBox.information(self, "✅ Success",
-                                        f"Flow saved to:\n{flow_file}")
+                QMessageBox.information(self, "✅ Success", f"Flow saved to:\n{flow_file}")
             except Exception as e:
                 QMessageBox.critical(self, "❌ Error", f"Failed to save flow:\n{str(e)}")
                 import traceback
@@ -2526,7 +2538,6 @@ class EditFlowPage(QWidget):
 
             print(f"✅ Loading flow from {flow_data.get('file_path', 'memory')}")
 
-            # 只在这里清空一次
             self.clear_flow_area()
             self.next_block_id = 1
 
@@ -2540,7 +2551,7 @@ class EditFlowPage(QWidget):
                     continue
 
                 block_name = block_info.get("name", "Unknown")
-                block_id = block_info.get("block_id", str(self.next_block_id))
+                block_id = str(block_info.get("block_id", str(self.next_block_id)))
                 x = block_info.get("x", 100)
                 y = block_info.get("y", 100)
 
@@ -2557,12 +2568,15 @@ class EditFlowPage(QWidget):
                         block_type="assembly"
                     )
 
-                    if block_info.get("assembly_data"):
+                    if isinstance(block_info.get("assembly_data"), dict):
                         block.assembly_data = block_info["assembly_data"]
                         block.config = block_info["assembly_data"]
-                    elif block_info.get("config"):
+                    elif isinstance(block_info.get("config"), dict):
                         block.assembly_data = block_info["config"]
                         block.config = block_info["config"]
+                    else:
+                        block.assembly_data = None
+                        block.config = None
 
                     block.block_id = block_id
 
@@ -2679,7 +2693,6 @@ class EditFlowPage(QWidget):
             QMessageBox.warning(self, "⚠️ Warning", "Please select a recipe first!")
             return
 
-        # Get the flow file path
         flows_folder = self.get_current_flows_folder()
         if not flows_folder:
             QMessageBox.warning(self, "⚠️ Warning", "Could not determine flows folder!")
@@ -2687,7 +2700,6 @@ class EditFlowPage(QWidget):
 
         flow_file = os.path.join(flows_folder, "pipeline_flow.json")
 
-        # Check if file exists
         if not os.path.exists(flow_file):
             QMessageBox.warning(
                 self,
@@ -2698,23 +2710,15 @@ class EditFlowPage(QWidget):
             return
 
         try:
-            # Load and parse the JSON file
             with open(flow_file, 'r', encoding='utf-8') as f:
                 flow_data = json.load(f)
 
-            # Add file path for reference
             flow_data['file_path'] = flow_file
 
-            # Clear current flow before loading
-            success = self.load_flow(flow_data)
-
-            # Load the flow
             success = self.load_flow(flow_data)
 
             if success:
-                # Update Assembly block displays
                 self.update_assembly_block_displays()
-
                 QMessageBox.information(
                     self,
                     "✅ Load Successful",
@@ -3011,49 +3015,6 @@ class EditFlowPage(QWidget):
 
         print(f"    Total paths reconstructed: {reconstructed_count}/{total_steps}")
 
-    def reconstruct_assembly_data(self, assembly_block):
-        """Reconstruct assembly data with captured image paths after loading"""
-        if not hasattr(assembly_block, 'assembly_data') or not assembly_block.assembly_data:
-            return
-
-        if not hasattr(assembly_block, 'block_id'):
-            self.assign_block_id(assembly_block)
-
-        assembly_data = assembly_block.assembly_data
-        selections = assembly_data.get('selections', {})
-
-        # Check the structure
-        if isinstance(selections, dict):
-            # New structure: selections contains 'total_steps' and 'selections'
-            if 'total_steps' in selections:
-                total_steps = selections.get('total_steps', 0)
-                step_selections = selections.get('selections', {})
-
-                # Reconstruct paths for each step
-                for step_num in range(1, total_steps + 1):
-                    step_key = str(step_num)
-                    if step_key in step_selections:
-                        step_data = step_selections[step_key]
-
-                        # Find captured image path
-                        captured_path = self.get_captured_image_path(assembly_block, step_num,
-                                                                     step_data.get('product_name', ''))
-                        if captured_path and os.path.exists(captured_path):
-                            step_data['captured_image_path'] = captured_path
-                            print(f"DEBUG: Reconstructed path for step {step_num}: {captured_path}")
-
-            # Old structure: selections is directly the step dictionary
-            else:
-                for step_key, step_data in selections.items():
-                    if isinstance(step_data, dict):
-                        step_num = int(step_key) if step_key.isdigit() else 0
-                        if step_num > 0:
-                            captured_path = self.get_captured_image_path(assembly_block, step_num,
-                                                                         step_data.get('product_name', ''))
-                            if captured_path and os.path.exists(captured_path):
-                                step_data['captured_image_path'] = captured_path
-                                print(f"DEBUG: Reconstructed path for step {step_key}: {captured_path}")
-
     def _verify_loaded_data(self):
         """Verify that all configuration data was loaded correctly"""
         print("\n=== DETAILED DATA VERIFICATION ===")
@@ -3157,37 +3118,62 @@ class EditFlowPage(QWidget):
             return None
 
     def update_assembly_block_displays(self):
-        """Update all Assembly block displays with their IDs and step counts"""
+        """Update all Assembly/Screw block displays with IDs and config summary"""
         for block in self.pipeline_blocks:
             if block.name == "Assembly":
-                if not hasattr(block, 'block_id'):
+                if not hasattr(block, 'block_id') or not block.block_id:
                     self.assign_block_id(block)
 
-                # Update the text display
                 if hasattr(block, 'text'):
-                    # Check if block has assembly_data
-                    if hasattr(block, 'assembly_data') and block.assembly_data:
-                        # Get total steps from the nested structure
-                        total_steps = 0
-                        selections_metadata = block.assembly_data.get('selections', {})
-                        if selections_metadata and isinstance(selections_metadata, dict):
-                            # The actual step count is in selections_metadata
-                            total_steps = selections_metadata.get('total_steps', 0)
+                    if hasattr(block, 'assembly_data') and isinstance(block.assembly_data, dict):
+                        total_steps = int(block.assembly_data.get('total_steps', 0))
 
                         if total_steps > 0:
                             block.text.setPlainText(f"Assembly (Block {block.block_id}, {total_steps} steps)")
-                            # Set color to indicate configured
+                            block.setBrush(QBrush(QColor("#93c5fd")))
                             block.setPen(QPen(QColor("#1d4ed8"), 2))
                         else:
                             block.text.setPlainText(f"Assembly (Block {block.block_id})")
-                            # Set default color for unconfigured blocks
-                            block.setBrush(QBrush(QColor("#93c5fd")))  # Light blue
+                            block.setBrush(QBrush(QColor("#93c5fd")))
                             block.setPen(QPen(QColor("#1d4ed8"), 2))
+
+                        text_rect = block.text.boundingRect()
+                        text_x = (block.block_width - text_rect.width()) / 2
+                        text_y = (block.block_height - text_rect.height()) / 2
+                        block.text.setPos(text_x, text_y)
+
                     else:
                         block.text.setPlainText(f"Assembly (Block {block.block_id})")
-                        # Set default color for unconfigured blocks
                         block.setBrush(QBrush(QColor("#93c5fd")))
                         block.setPen(QPen(QColor("#1d4ed8"), 2))
+
+                        text_rect = block.text.boundingRect()
+                        text_x = (block.block_width - text_rect.width()) / 2
+                        text_y = (block.block_height - text_rect.height()) / 2
+                        block.text.setPos(text_x, text_y)
+
+            elif block.name == "Screw":
+                if not hasattr(block, 'block_id') or not block.block_id:
+                    self.assign_block_id(block)
+
+                if hasattr(block, 'text'):
+                    if hasattr(block, 'config') and isinstance(block.config, dict):
+                        screw_count = block.config.get("count", "")
+                        screw_type = block.config.get("type", "")
+
+                        if screw_count and screw_type:
+                            block.text.setPlainText(
+                                f"Screw (Block {block.block_id}, {screw_count}x {screw_type})"
+                            )
+                        else:
+                            block.text.setPlainText(f"Screw (Block {block.block_id})")
+                    else:
+                        block.text.setPlainText(f"Screw (Block {block.block_id})")
+
+                    text_rect = block.text.boundingRect()
+                    text_x = (block.block_width - text_rect.width()) / 2
+                    text_y = (block.block_height - text_rect.height()) / 2
+                    block.text.setPos(text_x, text_y)
 
     # ================== Clear All ==================
     def clear_all(self, confirm=True):

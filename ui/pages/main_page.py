@@ -170,6 +170,7 @@ class MainPage(QWidget):
         self.last_valid_mes_time = None
         self.mes_outage_start = None
         self.pipeline_running = False
+        self.pending_run_after_qr = False
 
         self.has_active_mes_job = False
 
@@ -699,10 +700,8 @@ class MainPage(QWidget):
             self.qr_check_passed = False
             self.qr_result_ok = False
 
-            if hasattr(self, 'run_button'):
-                self.run_button.setEnabled(False)
-
-            self.show_qr_check_popup()
+        if hasattr(self, 'run_button'):
+            self.run_button.setEnabled(True)
 
         self.machine_status.repaint()
         self.mes_status_label.repaint()
@@ -803,14 +802,18 @@ class MainPage(QWidget):
 
         if self.qr_worker:
             self.qr_worker.stop_scan()
-            self.qr_worker.quit()
             self.qr_worker.wait(300)
             self.qr_worker.deleteLater()
             self.qr_worker = None
 
+        if self.pending_run_after_qr:
+            self.pending_run_after_qr = False
+            QTimer.singleShot(0, self.run_pipeline)
+
     def cancel_qr_scan(self):
         self.qr_check_passed = False
         self.qr_result_ok = False
+        self.pending_run_after_qr = False
 
         if self.qr_dialog:
             self.qr_dialog.reject()
@@ -818,7 +821,7 @@ class MainPage(QWidget):
             self.qr_dialog = None
 
         if hasattr(self, 'run_button'):
-            self.run_button.setEnabled(False)
+            self.run_button.setEnabled(True)
 
         if self.qr_worker:
             self.qr_worker.stop_scan()
@@ -827,19 +830,6 @@ class MainPage(QWidget):
             self.qr_worker = None
 
         QApplication.processEvents()
-
-        # QMessageBox.warning(
-        #     self,
-        #     "QR Check Incomplete",
-        #     "QR check was cancelled. Run Pipeline cannot be executed until the QR check is completed.",
-        #     QMessageBox.Ok
-        # )
-
-        # 关键：让同一个 job 下次也会重新弹 QR
-        self.has_active_mes_job = False
-        self.last_qr_job_id = None
-
-        QTimer.singleShot(200, lambda: self.fetch_mes_recipe_once(force=True))
 
     def enable_mes_recipe_mode(self, recipe_name, job_details=None):
         self.force_ui_update(recipe_name, job_details)
@@ -1160,12 +1150,8 @@ class MainPage(QWidget):
             return
 
         if not self.qr_check_passed:
-            QMessageBox.warning(
-                self,
-                "QR Scan Required",
-                "Please complete the QR check before running the pipeline.",
-                QMessageBox.Ok
-            )
+            self.pending_run_after_qr = True
+            self.show_qr_check_popup()
             return
 
         if hasattr(self, 'current_job_details') and self.current_job_details:
@@ -1617,14 +1603,19 @@ class MainPage(QWidget):
         self.main.go_to(self.main.login_page)
 
     def showEvent(self, event):
+        super().showEvent(event)
+
         if not self.spinner_timer.isActive():
             self.spinner_timer.start(500)
+
+        if not self.mes_recipe_timer.isActive():
+            self.mes_recipe_timer.start(5000)
+
+        self.try_fetch_mes_recipe()
 
         if not self.waiting_for_mes:
             self.refresh_recipes()
             self.load_pending_jobs()
-
-        super().showEvent(event)
 
     def closeEvent(self, event):
         self.time_timer.stop()
@@ -1641,10 +1632,17 @@ class MainPage(QWidget):
     def stop_background_tasks(self):
         if self.mes_recipe_timer.isActive():
             self.mes_recipe_timer.stop()
+
         if self.spinner_timer.isActive():
             self.spinner_timer.stop()
 
+        if self.qr_dialog:
+            self.qr_dialog.reject()
+            self.qr_dialog.deleteLater()
+            self.qr_dialog = None
+
         if self.qr_worker:
             self.qr_worker.stop_scan()
-            self.qr_worker.wait(1000)
+            self.qr_worker.wait(500)
+            self.qr_worker.deleteLater()
             self.qr_worker = None
