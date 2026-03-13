@@ -536,7 +536,7 @@ class MainPage(QWidget):
 
         action_buttons = [
             ("👨‍🔧 Technician Login", "#f97316", self.open_technician, "Access technician panel"),
-            ("▶ Run Pipeline", "#10b981", self.run_pipeline, "Execute selected recipe"),
+            ("▶ Start", "#10b981", self.run_pipeline, "Execute selected recipe"),
         ]
 
         for i, (text, color, callback, tooltip) in enumerate(action_buttons):

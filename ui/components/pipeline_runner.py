@@ -1304,16 +1304,55 @@ class PipelineRunner:
                     f"📐 Calibration: {cal_status}"
                 )
             else:
-                QMessageBox.information(
-                    parent_widget,
-                    "✅ Assembly Complete",
-                    f"Process executed successfully!\n\n"
-                    f"Job ID: {job_data['job_id']}{mes_info}\n"
-                    f"Recipe: {recipe_name}\n"
-                    f"Total steps: {job_data['total_steps']}\n\n"
-                    f"📡 TCP: {tcp_status}\n"
-                    f"📐 Calibration: {cal_status}"
-                )
+                success_dialog = QDialog(parent_widget)
+                success_dialog.setWindowTitle("Assembly Complete")
+                success_dialog.setFixedSize(500, 400)
+
+                layout = QVBoxLayout(success_dialog)
+                layout.setContentsMargins(30, 30, 30, 30)
+                layout.setSpacing(20)
+
+                tick_label = QLabel("✅")
+                tick_label.setAlignment(Qt.AlignCenter)
+                tick_label.setStyleSheet("""
+                        QLabel {
+                            font-size: 120px;
+                            color: #2ecc71;
+                            font-weight: bold;
+                        }
+                    """)
+                layout.addWidget(tick_label)
+
+                text_label = QLabel("Assembly Complete")
+                text_label.setAlignment(Qt.AlignCenter)
+                text_label.setStyleSheet("""
+                        QLabel {
+                            font-size: 32px;
+                            font-weight: bold;
+                            color: #27ae60;
+                        }
+                    """)
+                layout.addWidget(text_label)
+
+                ok_btn = QPushButton("OK")
+                ok_btn.setFixedHeight(50)
+                ok_btn.setStyleSheet("""
+                        QPushButton {
+                            font-size: 20px;
+                            font-weight: bold;
+                            background-color: #2ecc71;
+                            color: white;
+                            border-radius: 10px;
+                            padding: 10px 30px;
+                        }
+                        QPushButton:hover {
+                            background-color: #27ae60;
+                        }
+                    """)
+                ok_btn.clicked.connect(success_dialog.accept)
+                layout.addWidget(ok_btn, alignment=Qt.AlignCenter)
+
+                success_dialog.exec()
 
             return True
 
