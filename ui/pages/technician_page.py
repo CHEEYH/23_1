@@ -4,24 +4,41 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
-from ..components.buttons import create_button, SPACING, TITLE_FONT
+
+from ui.components.buttons import create_button, SPACING, TITLE_FONT
 from camera import CameraThread
 from config_manager import config_manager
 from camera.camera_setting import MainWindow as CameraSettingWindow
 
-# Import the laser calibration tool
 import sys
 import os
 
-# Add the project root to path to find laser_camera_calibrate.py
+# Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+# Import laser calibration tool
 try:
     from laser_camera_calibrate import MainWindow as CalibrationWindow
-
     LASER_CALIBRATION_AVAILABLE = True
 except ImportError:
     LASER_CALIBRATION_AVAILABLE = False
     print("Warning: laser_camera_calibrate.py not found. Laser calibration button will be disabled.")
+
+# Import Orbbec calibration page
+try:
+    from ui.components.calibration import Calibration
+    ORBBEC_CALIBRATION_AVAILABLE = True
+except ImportError:
+    ORBBEC_CALIBRATION_AVAILABLE = False
+    print("Warning: ui.components.calibration not found. Calibration button will be disabled.")
+
+# Import Orbbec thread
+try:
+    from camera.orbbec_camera_thread import OrbbecCameraThread
+    ORBBEC_THREAD_AVAILABLE = True
+except ImportError:
+    ORBBEC_THREAD_AVAILABLE = False
+    print("Warning: camera.orbbec_camera_thread not found. Calibration live capture will be disabled.")
 
 
 class TechnicianPage(QWidget):
@@ -29,8 +46,12 @@ class TechnicianPage(QWidget):
         super().__init__()
         self.main = parent
         self.cam = None
+
         self.camera_settings_window = None
-        self.calibration_window = None  # Add reference for calibration window
+        self.calibration_window = None            # laser calibration window
+        self.orbbec_calibration_window = None     # orbbec calibration page
+        self.orbbec_thread = None                 # live orbbec thread for calibration page
+
         self.init_ui()
 
     def init_ui(self):
@@ -43,12 +64,9 @@ class TechnicianPage(QWidget):
         title.setStyleSheet(f"font-size:{TITLE_FONT}px;font-weight:600;color:#4b5563;")
         layout.addWidget(title)
 
-        # # Video display area
+        # Optional video display area (currently unused)
         # self.video = QLabel()
         # self.video.setFixedSize(560, 420)
-        # self.video.setStyleSheet("background:black;border:2px solid #ccc;border-radius:8px;")
-        # self.video.setAlignment(Qt.AlignCenter)
-        # self.video.setText("Camera Off")
         # self.video.setStyleSheet("""
         #     QLabel {
         #         background:black;
@@ -59,19 +77,23 @@ class TechnicianPage(QWidget):
         #         font-weight:bold;
         #     }
         # """)
+        # self.video.setAlignment(Qt.AlignCenter)
+        # self.video.setText("Camera Off")
         # layout.addWidget(self.video)
+
         layout.addSpacing(150)
-        # Buttons - ADD THE LASER CALIBRATION BUTTON HERE
+
         buttons = [
             # ("📷 Camera ON / OFF", "#33CCFF", self.toggle_camera),
             ("⚙️ Camera Settings", "#666666", self.open_camera_settings),
         ]
 
-        # Only add laser calibration button if available
         if LASER_CALIBRATION_AVAILABLE:
             buttons.append(("🎯 Laser Calibration", "#FF9900", self.open_laser_calibration))
 
-        # Add remaining buttons
+        if ORBBEC_CALIBRATION_AVAILABLE:
+            buttons.append(("📐 Calibration", "#00AAFF", self.open_orbbec_calibration))
+
         buttons.extend([
             ("📋 Recipe Menu", "#3399FF", lambda: self.main.go_to(self.main.recipe_menu_page)),
             ("📝 Edit Flow", "#FFCC00", lambda: self.main.go_to(self.main.edit_flow_page)),
@@ -83,10 +105,12 @@ class TechnicianPage(QWidget):
             layout.addWidget(create_button(*b))
 
         layout.addStretch()
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(QWidget())
         QVBoxLayout(scroll.widget()).addLayout(layout)
+
         QVBoxLayout(self).addWidget(scroll)
 
     def toggle_camera(self):
@@ -110,19 +134,10 @@ class TechnicianPage(QWidget):
         try:
             from camera.camera_setting import MainWindow as CameraSettingWindow
 
-            # Create new camera settings window (will create its own connection)
             self.camera_settings_window = CameraSettingWindow()
-
-            # Set window modality to prevent interaction with main window
             self.camera_settings_window.setWindowModality(Qt.ApplicationModal)
-
-            # Set window title
             self.camera_settings_window.setWindowTitle("Camera Settings")
-
-            # Connect close event to cleanup
             self.camera_settings_window.destroyed.connect(self.on_camera_settings_closed)
-
-            # Show the window
             self.camera_settings_window.show()
 
             print("✅ Camera settings window opened")
@@ -138,26 +153,14 @@ class TechnicianPage(QWidget):
     def open_laser_calibration(self):
         """Open the laser camera calibration tool"""
         try:
-            # Check if calibration window already exists
             if self.calibration_window is not None:
-                # If it exists, just bring it to front
                 self.calibration_window.raise_()
                 self.calibration_window.activateWindow()
                 return
 
-            # Create new calibration window
             self.calibration_window = CalibrationWindow()
-
-            # Set window modality (optional - remove if you want to interact with both windows)
-            # self.calibration_window.setWindowModality(Qt.ApplicationModal)
-
-            # Set window title
             self.calibration_window.setWindowTitle("Laser Camera Calibration")
-
-            # Connect close event to cleanup
             self.calibration_window.destroyed.connect(self.on_calibration_closed)
-
-            # Show the window
             self.calibration_window.show()
 
             print("✅ Laser calibration window opened")
@@ -168,22 +171,92 @@ class TechnicianPage(QWidget):
             traceback.print_exc()
 
     def on_calibration_closed(self):
-        """Handle calibration window closing"""
+        """Handle laser calibration window closing"""
         self.calibration_window = None
         print("Laser calibration window closed")
+
+    def _ensure_orbbec_thread(self):
+        """Create/start Orbbec thread if needed"""
+        if not ORBBEC_THREAD_AVAILABLE:
+            return False
+
+        try:
+            if self.orbbec_thread is not None and self.orbbec_thread.isRunning():
+                return True
+
+            self.orbbec_thread = OrbbecCameraThread()
+            self.orbbec_thread.start()
+            print("✅ Orbbec thread started for calibration")
+            return True
+
+        except Exception as e:
+            QMessageBox.critical(self, "❌ Error", f"Failed to start Orbbec thread: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.orbbec_thread = None
+            return False
+
+    def open_orbbec_calibration(self):
+        """Open the Orbbec calibration page"""
+        try:
+            if self.orbbec_calibration_window is not None:
+                self.orbbec_calibration_window.raise_()
+                self.orbbec_calibration_window.activateWindow()
+                return
+
+            current_recipe = config_manager.current_recipe
+            if not current_recipe:
+                QMessageBox.warning(
+                    self,
+                    "⚠️ No Recipe Selected",
+                    "Please select a recipe first."
+                )
+                return
+
+            if not self._ensure_orbbec_thread():
+                QMessageBox.warning(
+                    self,
+                    "⚠️ Orbbec Unavailable",
+                    "Orbbec thread could not be started.\nCalibration page will not open."
+                )
+                return
+
+            self.orbbec_calibration_window = Calibration(
+                source_image_path="",   # left side will auto-capture from source camera
+                recipe_name=current_recipe,
+                orbbec_thread=self.orbbec_thread,
+                parent=self
+            )
+
+            self.orbbec_calibration_window.setWindowTitle("Orbbec Calibration")
+            self.orbbec_calibration_window.destroyed.connect(self.on_orbbec_calibration_closed)
+            self.orbbec_calibration_window.show()
+
+            print("✅ Orbbec calibration page opened")
+
+        except Exception as e:
+            QMessageBox.critical(self, "❌ Error", f"Failed to open Orbbec calibration: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def on_orbbec_calibration_closed(self):
+        """Handle Orbbec calibration window closing"""
+        self.orbbec_calibration_window = None
+        print("Orbbec calibration window closed")
 
     def go_to_deep_learning(self):
         """Go to Deep Learning page after selecting recipe"""
         recipes = config_manager.get_available_recipes()
 
         if not recipes:
-            QMessageBox.warning(self, "⚠️ No Recipes",
-                                "No recipes found! Please create a recipe first.")
-            # Automatically go to Recipe Menu page
+            QMessageBox.warning(
+                self,
+                "⚠️ No Recipes",
+                "No recipes found! Please create a recipe first."
+            )
             self.main.go_to(self.main.recipe_menu_page)
             return
 
-        # Let user select recipe to train
         recipe, ok = QInputDialog.getItem(
             self,
             "🔍 Select Recipe for Deep Learning",
@@ -194,9 +267,27 @@ class TechnicianPage(QWidget):
         )
 
         if ok and recipe:
-            # Set current recipe
             config_manager.set_current_recipe(recipe)
             print(f"✅ Selected recipe for Deep Learning: {recipe}")
-
-            # Go to Deep Learning page
             self.main.go_to(self.main.deep_learning_page)
+
+    def closeEvent(self, event):
+        """Cleanup threads/windows when page is closed"""
+        try:
+            if self.cam:
+                self.cam.stop()
+                self.cam = None
+        except Exception:
+            pass
+
+        try:
+            if self.orbbec_thread is not None:
+                try:
+                    self.orbbec_thread.stop()
+                except Exception:
+                    pass
+                self.orbbec_thread = None
+        except Exception:
+            pass
+
+        super().closeEvent(event)

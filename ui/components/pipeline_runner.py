@@ -11,10 +11,11 @@ from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QGridLayout, QSplitter, QWidget, QSizePolicy
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QImage
 from ui.components.heartbeat_manager import HeartbeatManager
 from ui.components.dialogs import Calibration  # Import the Calibration class
 from config_manager import config_manager
+from camera.orbbec_camera_thread import OrbbecCameraThread
 
 # Try to import camera module
 CAMERA_AVAILABLE = False
@@ -1588,6 +1589,7 @@ class PipelineRunner:
                 capture_runner = None
 
         def on_cancel():
+            stop_orbbec_live_view()
             cleanup_capture_runner()
             dialog.reject()
 
@@ -1676,64 +1678,140 @@ class PipelineRunner:
             detection_header.setStyleSheet(f"font-size:16px;font-weight:900;color:{color};letter-spacing:3px;font-family:Consolas;background:transparent;")
             dph_dot.setStyleSheet(f"font-size:14px;color:{color};background:transparent;")
 
-        def start_detection_capture(status_text="STATUS: Opening camera..."):
+        orbbec_thread = None
+
+        def update_orbbec_view(frame):
+            if frame is None:
+                return
+            try:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w = rgb.shape[:2]
+                qimg = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888)
+                pixmap = QPixmap.fromImage(qimg)
+
+                if not pixmap.isNull():
+                    scaled = pixmap.scaled(
+                        detection_label.size(),
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+                    detection_label.setPixmap(scaled)
+                    detection_label.setAlignment(Qt.AlignCenter)
+            except Exception as e:
+                detection_status.setText(f"❌ Live view error: {str(e)[:60]}")
+
+        def start_orbbec_live_view():
+            nonlocal orbbec_thread
+
+            if orbbec_thread is not None and orbbec_thread.isRunning():
+                return
+
+            try:
+                orbbec_thread = OrbbecCameraThread()
+                orbbec_thread.frame_signal.connect(update_orbbec_view)
+                orbbec_thread.status_signal.connect(lambda msg: detection_status.setText(msg))
+                orbbec_thread.error_signal.connect(lambda msg: detection_status.setText(f"❌ {msg}"))
+                orbbec_thread.start()
+            except Exception as e:
+                detection_status.setText(f"❌ Failed to start Orbbec: {str(e)[:60]}")
+
+        def stop_orbbec_live_view():
+            nonlocal orbbec_thread
+
+            if orbbec_thread is not None:
+                try:
+                    orbbec_thread.clear_external_target_bbox()
+                except Exception:
+                    pass
+
+                try:
+                    orbbec_thread.stop()
+                except Exception:
+                    pass
+
+                orbbec_thread = None
+
+        def start_detection_capture(status_text="STATUS: Opening camera."):
             nonlocal capture_runner
+
             detection_status.setText(status_text)
-            detection_status.setStyleSheet("font-size:12px;color:#FFAA00;font-weight:900;font-family:Consolas;padding:0px 10px;background:#030810;border-bottom:1px solid #0E2A40;")
+            detection_status.setStyleSheet(
+                "font-size:12px;color:#FFAA00;font-weight:900;font-family:Consolas;padding:0px 10px;background:#030810;border-bottom:1px solid #0E2A40;")
             detection_header.setText("DETECTION RESULT")
-            detection_header.setStyleSheet("font-size:16px;font-weight:900;color:#AACCEE;letter-spacing:3px;font-family:Consolas;background:transparent;")
+            detection_header.setStyleSheet(
+                "font-size:16px;font-weight:900;color:#AACCEE;letter-spacing:3px;font-family:Consolas;background:transparent;")
             dph_dot.setStyleSheet("font-size:14px;color:#FF3344;background:transparent;")
             detection_result.setText("DETECTED: --")
             confidence_label.setText("CONFIDENCE: --")
             coord_status_label.setText("COORDINATES: Not sent")
-            coord_status_label.setStyleSheet("font-size:12px;color:#7AAAD4;padding:0px 10px;background:#030810;font-family:Consolas;")
+            coord_status_label.setStyleSheet(
+                "font-size:12px;color:#7AAAD4;padding:0px 10px;background:#030810;font-family:Consolas;")
+
             detection_label.clear()
-            loading_widget.setVisible(True)
-            detection_label.setVisible(False)
+            detection_label.setText("")
+            detection_label.setVisible(True)
+
+            loading_widget.setVisible(False)
+
             verify_btn.setEnabled(False)
             retry_btn.setEnabled(False)
+
+            start_orbbec_live_view()
+
             if not loading_timer.isActive():
                 loading_timer.start(500)
+
             QApplication.processEvents()
+
             if CAMERA_AVAILABLE:
                 from camera.camera import AutoCaptureFlow
                 capture_runner = AutoCaptureFlow(callback=on_capture_finished)
             else:
-                detection_label.setText("❌ Camera module not available")
                 detection_status.setText("❌ Camera unavailable")
+                detection_label.setText("❌ Camera module not available")
                 show_results()
 
         def on_capture_finished(success, message, image_path):
             nonlocal captured_image_path, detection_results, output_path
             nonlocal predictions_for_sending, target_detected_successfully, auto_retry_count
+
             QApplication.processEvents()
+
             if not success or not image_path:
                 detection_label.setText(f"❌ Capture failed: {message}")
                 detection_status.setText(f"❌ {message}")
-                detection_status.setStyleSheet("font-size: 14px; color: #FF3344; font-weight: 800; font-family: Consolas; padding: 4px 10px;")
+                detection_status.setStyleSheet(
+                    "font-size: 14px; color: #FF3344; font-weight: 800; font-family: Consolas; padding: 4px 10px;")
                 show_results()
                 verify_btn.setEnabled(False)
                 retry_btn.setEnabled(True)
                 return
+
             try:
-                detection_status.setText("STATUS: Running AI detection...")
+                detection_status.setText("STATUS: Running AI detection.")
                 QApplication.processEvents()
+
                 shutil.copy2(image_path, new_capture_path)
                 if os.path.exists(image_path):
                     os.remove(image_path)
+
                 captured_image_path = new_capture_path
+
                 if not model_path or not os.path.exists(model_path):
                     _set_detection_header("⚠  NO YOLO MODEL", "#FFAA00", "#1A1000")
                     detection_status.setText("⚠ No model found in yolo_model folder")
-                    detection_status.setStyleSheet("font-size:12px;color:#FFAA00;font-weight:900;font-family:Consolas;padding:0px 10px;background:#030810;border-bottom:1px solid #0E2A40;")
+                    detection_status.setStyleSheet(
+                        "font-size:12px;color:#FFAA00;font-weight:900;font-family:Consolas;padding:0px 10px;background:#030810;border-bottom:1px solid #0E2A40;")
                     show_results()
                     retry_btn.setEnabled(True)
+                    verify_btn.setEnabled(False)
                     return
-                from ultralytics import YOLO
+
                 frame = cv2.imread(new_capture_path)
                 model = YOLO(model_path)
                 results = model(frame, conf=0.25, classes=[class_id] if class_id is not None else None)
                 detections = results[0]
+
                 predictions_for_sending = []
                 if len(detections.boxes) > 0:
                     boxes = detections.boxes
@@ -1742,52 +1820,96 @@ class PipelineRunner:
                         class_id_val = int(boxes.cls[i].cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls[i])
                         conf_val = float(boxes.conf[i].cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf[i])
                         class_name = detections.names.get(class_id_val, f"class_{class_id_val}")
-                        predictions_for_sending.append({'bbox': xyxy.tolist() if hasattr(xyxy, 'tolist') else xyxy, 'class_id': class_id_val, 'class_name': class_name, 'confidence': conf_val})
+                        predictions_for_sending.append({
+                            'bbox': xyxy.tolist() if hasattr(xyxy, 'tolist') else xyxy,
+                            'class_id': class_id_val,
+                            'class_name': class_name,
+                            'confidence': conf_val
+                        })
+
+                if predictions_for_sending and orbbec_thread is not None:
+                    try:
+                        best_prediction = max(predictions_for_sending, key=lambda p: p.get('confidence', 0))
+                        best_bbox = best_prediction.get('bbox', None)
+                        print(f"[pipeline_runner] best_bbox before sending to Orbbec: {best_bbox}")
+                        if best_bbox:
+                            orbbec_thread.set_external_target_bbox(best_bbox)
+                    except Exception as e:
+                        print(f"❌ Failed to update Orbbec target bbox: {e}")
+                elif orbbec_thread is not None:
+                    try:
+                        orbbec_thread.clear_external_target_bbox()
+                    except Exception as e:
+                        print(f"❌ Failed to clear Orbbec target bbox: {e}")
+
                 target_found = has_target_class(detections, class_id)
                 target_detected_successfully = target_found
+
+                if not target_found and orbbec_thread is not None:
+                    try:
+                        orbbec_thread.clear_external_target_bbox()
+                    except Exception as e:
+                        print(f"❌ Failed to clear Orbbec target bbox: {e}")
+
                 annotated_frame = detections.plot()
                 output_path = os.path.join(capture_folder, f"Step_{step_num}_{timestamp}_detected.jpg")
                 cv2.imwrite(output_path, annotated_frame)
-                rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-                height, width = rgb_frame.shape[:2]
-                from PySide6.QtGui import QImage
-                q_img = QImage(rgb_frame.data, width, height, rgb_frame.strides[0], QImage.Format_RGB888)
-                pixmap = QPixmap.fromImage(q_img)
-                if not pixmap.isNull():
-                    update_detection_pixmap(pixmap)
+
                 if len(detections.boxes) > 0:
                     boxes = detections.boxes
                     confidences = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
                     class_counts = {}
+
                     if hasattr(detections, 'names') and hasattr(boxes, 'cls'):
                         cids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
                         for cid in cids:
                             cn = detections.names.get(int(cid), f"class_{int(cid)}")
                             class_counts[cn] = class_counts.get(cn, 0) + 1
+
                     avg_confidence = np.mean(confidences) * 100 if len(confidences) > 0 else 0
                     detection_result.setText(f"DETECTED: {', '.join([f'{k}:{v}' for k, v in class_counts.items()])}")
                     confidence_label.setText(f"CONFIDENCE: {avg_confidence:.1f}%")
-                    detection_results = {'image_path': output_path, 'objects': class_counts, 'count': len(boxes), 'confidence': float(avg_confidence), 'class_id': class_id, 'target_found': target_found}
+                    detection_results = {
+                        'image_path': output_path,
+                        'objects': class_counts,
+                        'count': len(boxes),
+                        'confidence': float(avg_confidence),
+                        'class_id': class_id,
+                        'target_found': target_found
+                    }
                 else:
                     detection_result.setText("DETECTED: None")
                     confidence_label.setText("CONFIDENCE: N/A")
-                    detection_results = {'image_path': output_path, 'objects': {}, 'count': 0, 'confidence': 0, 'class_id': class_id, 'target_found': False}
+                    detection_results = {
+                        'image_path': output_path,
+                        'objects': {},
+                        'count': 0,
+                        'confidence': 0,
+                        'class_id': class_id,
+                        'target_found': False
+                    }
 
                 if target_found:
                     _set_detection_header("✓  TARGET DETECTED", "#00FF88", "#031A10")
                     detection_status.setText("✓ Target class detected")
-                    detection_status.setStyleSheet("font-size: 14px; color: #00FF88; font-weight: 800; font-family: Consolas; padding: 4px 10px;")
+                    detection_status.setStyleSheet(
+                        "font-size: 14px; color: #00FF88; font-weight: 800; font-family: Consolas; padding: 4px 10px;")
+
                     if predictions_for_sending:
-                        coord_status_label.setText("COORDINATES: Sending...")
-                        coord_status_label.setStyleSheet("font-size: 13px; color: #FFAA00; padding: 6px 10px; background-color: #1A1000; border-radius: 0px; font-weight: 800; font-family: Consolas;")
+                        coord_status_label.setText("COORDINATES: Sending.")
+                        coord_status_label.setStyleSheet(
+                            "font-size: 13px; color: #FFAA00; padding: 6px 10px; background-color: #1A1000; border-radius: 0px; font-weight: 800; font-family: Consolas;")
                         QApplication.processEvents()
                         success_sent = PipelineRunner.send_coordinates_to_server(predictions_for_sending, calibration)
                         if success_sent:
                             coord_status_label.setText("COORDINATES: Sent ✓")
-                            coord_status_label.setStyleSheet("font-size: 13px; color: #00FF88; padding: 6px 10px; background-color: #031A10; border-radius: 0px; font-weight: 800; font-family: Consolas;")
+                            coord_status_label.setStyleSheet(
+                                "font-size: 13px; color: #00FF88; padding: 6px 10px; background-color: #031A10; border-radius: 0px; font-weight: 800; font-family: Consolas;")
                         else:
                             coord_status_label.setText("COORDINATES: Send failed ✕")
-                            coord_status_label.setStyleSheet("font-size: 13px; color: #FF3344; padding: 6px 10px; background-color: #1A0508; border-radius: 0px; font-weight: 800; font-family: Consolas;")
+                            coord_status_label.setStyleSheet(
+                                "font-size: 13px; color: #FF3344; padding: 6px 10px; background-color: #1A0508; border-radius: 0px; font-weight: 800; font-family: Consolas;")
+
                     show_results()
                     verify_btn.setEnabled(True)
                     retry_btn.setEnabled(False)
@@ -1797,23 +1919,27 @@ class PipelineRunner:
                     auto_retry_count += 1
                     target_detected_successfully = False
                     _set_detection_header("↺  AUTO RETRYING", "#FFAA00", "#1A1000")
-                    detection_status.setText(f"⚠ Target not found, retrying... ({auto_retry_count}/{max_auto_retry})")
-                    detection_status.setStyleSheet("font-size:12px;color:#FFAA00;font-weight:900;font-family:Consolas;padding:0px 10px;background:#030810;border-bottom:1px solid #0E2A40;")
+                    detection_status.setText(f"⚠ Target not found, retrying. ({auto_retry_count}/{max_auto_retry})")
+                    detection_status.setStyleSheet(
+                        "font-size:12px;color:#FFAA00;font-weight:900;font-family:Consolas;padding:0px 10px;background:#030810;border-bottom:1px solid #0E2A40;")
                     coord_status_label.setText("COORDINATES: Not sent")
-                    coord_status_label.setStyleSheet("font-size:12px;color:#7AAAD4;padding:0px 10px;background:#030810;font-family:Consolas;")
+                    coord_status_label.setStyleSheet(
+                        "font-size:12px;color:#7AAAD4;padding:0px 10px;background:#030810;font-family:Consolas;")
                     QApplication.processEvents()
                     detection_label.clear()
                     verify_btn.setEnabled(False)
                     retry_btn.setEnabled(False)
                     cleanup_capture_runner()
-                    start_detection_capture("↺ Auto retry...")
+                    start_detection_capture("↺ Auto retry.")
                     return
 
                 _set_detection_header("✕  NO TARGET DETECTED", "#FF3344", "#1A0508")
                 detection_status.setText("✕ Target not detected after auto retry")
-                detection_status.setStyleSheet("font-size: 14px; color: #FF3344; font-weight: 800; font-family: Consolas; padding: 4px 10px;")
+                detection_status.setStyleSheet(
+                    "font-size: 14px; color: #FF3344; font-weight: 800; font-family: Consolas; padding: 4px 10px;")
                 coord_status_label.setText("COORDINATES: Not sent")
-                coord_status_label.setStyleSheet("font-size: 13px; color: #FF3344; padding: 6px 10px; background-color: #1A0508; border-radius: 0px; font-weight: 800; font-family: Consolas;")
+                coord_status_label.setStyleSheet(
+                    "font-size: 13px; color: #FF3344; padding: 6px 10px; background-color: #1A0508; border-radius: 0px; font-weight: 800; font-family: Consolas;")
                 show_results()
                 verify_btn.setEnabled(False)
                 retry_btn.setEnabled(True)
@@ -1821,9 +1947,11 @@ class PipelineRunner:
             except Exception as e:
                 _set_detection_header("✕  DETECTION ERROR", "#FF3344", "#1A0508")
                 detection_status.setText(f"✕ Error: {str(e)[:50]}")
-                detection_status.setStyleSheet("font-size: 14px; color: #FF3344; font-weight: 800; font-family: Consolas; padding: 4px 10px;")
+                detection_status.setStyleSheet(
+                    "font-size: 14px; color: #FF3344; font-weight: 800; font-family: Consolas; padding: 4px 10px;")
                 coord_status_label.setText("COORDINATES: Not sent")
-                coord_status_label.setStyleSheet("font-size: 13px; color: #FF3344; padding: 6px 10px; background-color: #1A0508; border-radius: 0px; font-weight: 800; font-family: Consolas;")
+                coord_status_label.setStyleSheet(
+                    "font-size: 13px; color: #FF3344; padding: 6px 10px; background-color: #1A0508; border-radius: 0px; font-weight: 800; font-family: Consolas;")
                 show_results()
                 verify_btn.setEnabled(False)
                 retry_btn.setEnabled(True)
@@ -1835,18 +1963,29 @@ class PipelineRunner:
         def on_retry_detection():
             nonlocal manual_retry_count, target_detected_successfully, auto_retry_count
             nonlocal predictions_for_sending, detection_results, output_path, captured_image_path
+
             cleanup_capture_runner()
+
+            if orbbec_thread is not None:
+                try:
+                    orbbec_thread.clear_external_target_bbox()
+                except Exception as e:
+                    print(f"❌ Failed to clear Orbbec target bbox on retry: {e}")
+
             manual_retry_count += 1
             auto_retry_count = 0
             target_detected_successfully = False
             predictions_for_sending = []
             detection_results = output_path = captured_image_path = None
+
             verify_btn.setEnabled(False)
             retry_btn.setEnabled(False)
+
             detection_label.clear()
-            start_detection_capture(f"↺ Manual retry... ({manual_retry_count})")
+            start_detection_capture(f"↺ Manual retry. ({manual_retry_count})")
 
         def on_verify():
+            stop_orbbec_live_view()
             nonlocal captured_image_path, detection_results, output_path, target_detected_successfully
             if not target_detected_successfully:
                 QMessageBox.warning(parent_widget, "⚠️ Target Not Detected", "Cannot continue because target class was not detected.\nPlease cancel and try again.")
@@ -2039,6 +2178,7 @@ class PipelineRunner:
 
         retry_btn.clicked.connect(on_retry_detection)
         verify_btn.clicked.connect(on_verify)
+        dialog.finished.connect(lambda _: stop_orbbec_live_view())
 
         try:
             result = dialog.exec()
