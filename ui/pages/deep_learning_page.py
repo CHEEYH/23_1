@@ -1789,7 +1789,7 @@ class DeepLearningPage(QWidget):
             self.current_model = None
             self.capture_predict_btn.setEnabled(False)
 
-    def predict_current_image(self, class_filter=None):
+    def predict_current_image(self, class_filter=None, show_progress=True):
         """Simple prediction"""
         if not hasattr(self, 'current_model') or self.current_model is None:
             self.show_notification("Load a model first", "warning")
@@ -1799,12 +1799,17 @@ class DeepLearningPage(QWidget):
             self.show_notification("Open an image first", "warning")
             return
 
-        self.prediction_progress_dialog = QProgressDialog(
-            "Running AI detection...", "Cancel", 0, 100, self
-        )
-        self.prediction_progress_dialog.setWindowTitle("AI Detection")
-        self.prediction_progress_dialog.setMinimumDuration(0)
-        self.prediction_progress_dialog.canceled.connect(self.cancel_prediction)
+        # 先清掉旧的 dialog 参考，避免残留
+        self.prediction_progress_dialog = None
+
+        if show_progress:
+            self.prediction_progress_dialog = QProgressDialog(
+                "Running AI detection.", "Cancel", 0, 100, self
+            )
+            self.prediction_progress_dialog.setWindowTitle("AI Detection")
+            self.prediction_progress_dialog.setMinimumDuration(0)
+            self.prediction_progress_dialog.canceled.connect(self.cancel_prediction)
+            self.prediction_progress_dialog.show()
 
         self.is_predicting = True
 

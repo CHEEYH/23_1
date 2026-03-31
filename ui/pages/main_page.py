@@ -4,6 +4,7 @@ import socket
 import os
 from datetime import datetime
 from typing import Dict
+import threading
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -16,6 +17,8 @@ from PySide6.QtGui import QFont, QPalette, QColor
 from config_manager import config_manager
 from ui.components.pipeline_runner import PipelineRunner
 from ui.components.mes_client import MESClient
+from ui.pages.deep_learning_page import CameraWorker, CAMERA_AVAILABLE
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  HIGH-CONTRAST Color tokens
@@ -297,6 +300,11 @@ class MainPage(QWidget):
         self.init_timers()
         self.start_spinner()
         self._apply_host_theme()
+
+        self.pipeline_precheck_running = False
+        self.pending_run_after_precheck = False
+        self.last_precheck_image = None
+        self._original_prediction_finished_handler_swapped = False
 
     # ── Theme ──────────────────────────────────────────────────────────────
 
@@ -1069,22 +1077,35 @@ class MainPage(QWidget):
 
     def confirm_qr_scan(self):
         if not self.qr_result_ok:
-            QMessageBox.warning(self, "No QR Data", "No QR data received yet.", QMessageBox.Ok);
+            QMessageBox.warning(self, "No QR Data", "No QR data received yet.", QMessageBox.Ok)
             return
+
         self.qr_check_passed = True
-        if self.qr_dialog: self.qr_dialog.accept(); self.qr_dialog.deleteLater(); self.qr_dialog = None
-        if hasattr(self, 'run_button'): self.run_button.setEnabled(True)
+
+        if self.qr_dialog:
+            self.qr_dialog.accept()
+            self.qr_dialog.deleteLater()
+            self.qr_dialog = None
+
+        if hasattr(self, 'run_button'):
+            self.run_button.setEnabled(True)
+
         if self.current_recipe and self.current_job_title:
             self.machine_status.setText(f"READY  ·  {self.current_recipe}  ·  {self.current_job_title}")
         else:
             self.machine_status.setText("READY")
+
         QApplication.processEvents()
+
         if self.qr_worker:
-            self.qr_worker.stop_scan();
+            self.qr_worker.stop_scan()
             self.qr_worker.wait(300)
-            self.qr_worker.deleteLater();
+            self.qr_worker.deleteLater()
             self.qr_worker = None
-        if self.pending_run_after_qr: self.pending_run_after_qr = False; QTimer.singleShot(0, self.run_pipeline)
+
+        if self.pending_run_after_qr:
+            self.pending_run_after_qr = False
+            QTimer.singleShot(0, self.start_pipeline_precheck)
 
     def cancel_qr_scan(self):
         self.qr_check_passed = False;
@@ -1114,48 +1135,340 @@ class MainPage(QWidget):
 
     def run_pipeline(self):
         if self.waiting_for_mes:
-            QMessageBox.warning(self, "Waiting for MES", "Still waiting for a recipe from MES.", QMessageBox.Ok);
+            QMessageBox.warning(self, "Waiting for MES", "Still waiting for a recipe from MES.")
             return
+
         if not self.current_recipe:
-            QMessageBox.warning(self, "No Recipe", "No recipe selected from MES.", QMessageBox.Ok);
+            QMessageBox.warning(self, "No Recipe", "Please select a recipe first.")
             return
+
+        if self.pipeline_running or self.pipeline_precheck_running:
+            return
+
         if not self.qr_check_passed:
-            self.pending_run_after_qr = True;
-            self.show_qr_check_popup();
+            self.pending_run_after_qr = True
+            self.show_qr_check_popup()
             return
 
-        current_job_id = None
-        if hasattr(self, 'current_job_details') and self.current_job_details:
-            current_job_id = self.current_job_details.get('title') or self.current_job_details.get(
-                'workOrder') or 'Unknown'
-            pending_parts = self.mes.get_all_pending_parts()
-            if pending_parts:
-                assembled = [{"partNumber": p['partNumber'], "uid": p['uid']}
-                             for p in pending_parts if p.get('partNumber') and p.get('uid')]
-                if assembled and not self.mes.post_batch_assembly_results(assembled):
-                    QMessageBox.warning(self, "MES Update Failed", "Failed to post UIDs to MES.", QMessageBox.Ok);
-                    return
-            else:
-                if QMessageBox.question(self, "No Pending Parts", "No pending parts in MES. Continue anyway?",
-                                        QMessageBox.Yes | QMessageBox.No) == QMessageBox.No: return
+        self.start_pipeline_precheck()
 
-        existing = next((j for j in self.pending_jobs if j.get('job_id') == current_job_id), None)
-        label = 'Continuing' if existing else 'Starting'
-        short = current_job_id[:8] if current_job_id else 'NEW'
-        self.machine_status.setText(f"RUNNING  ·  {label} {short}…")
-        self.machine_status.repaint();
-        QApplication.processEvents()
+    def _find_deep_learning_page(self):
+        """
+        Try to locate the DeepLearningPage instance from main window.
+        Change this if your real attribute name is different.
+        """
+        candidate_names = [
+            "deep_learning_page",
+            "deeplearning_page",
+            "dl_page",
+            "deepLearningPage",
+        ]
 
-        if existing:
-            self.continue_job(existing)
-        else:
-            self.pipeline_running = True
+        for name in candidate_names:
+            page = getattr(self.main, name, None)
+            if page and hasattr(page, "auto_load_latest_model") and hasattr(page, "predict_current_image"):
+                return page
+
+        # fallback: scan main's attributes
+        for name in dir(self.main):
             try:
-                success = PipelineRunner.run_pipeline_operator_mode(
-                    self.current_recipe, self, pending_callback=lambda j: self.save_pending(self.current_recipe, j))
-            finally:
-                self.pipeline_running = False
-            self._post_run(success)
+                obj = getattr(self.main, name)
+            except Exception:
+                continue
+            if obj and hasattr(obj, "auto_load_latest_model") and hasattr(obj, "predict_current_image"):
+                return obj
+
+        return None
+
+    def run_pipeline_after_precheck(self):
+        if self.pipeline_running:
+            return
+
+        self.machine_status.setText("RUNNING…")
+        self.pipeline_running = True
+        try:
+            success = PipelineRunner.run_pipeline_operator_mode(
+                self.current_recipe,
+                self,
+                pending_callback=lambda j: self.save_pending(self.current_recipe, j)
+            )
+        finally:
+            self.pipeline_running = False
+
+        self._post_run(success)
+
+    def start_pipeline_precheck(self):
+        if self.pipeline_precheck_running:
+            return
+
+        try:
+            from ui.pages.deep_learning_page import CameraWorker, CAMERA_AVAILABLE
+        except Exception as e:
+            QMessageBox.warning(self, "AI Check Error", f"Cannot import DeepLearningPage camera tools:\n{str(e)}")
+            return
+
+        if not CAMERA_AVAILABLE:
+            QMessageBox.warning(self, "Camera Error", "Camera not available.")
+            return
+
+        dl_page = self._find_deep_learning_page()
+        if dl_page is None:
+            QMessageBox.warning(
+                self,
+                "AI Check Error",
+                "DeepLearningPage instance not found.\n"
+                "Please check the attribute name in _find_deep_learning_page()."
+            )
+            return
+
+        try:
+            dl_page.update_paths_from_recipe()
+        except Exception as e:
+            QMessageBox.warning(self, "AI Check Error", f"Failed to update AI paths:\n{str(e)}")
+            return
+
+        try:
+            if not hasattr(dl_page, "current_model") or dl_page.current_model is None:
+                loaded = dl_page.auto_load_latest_model()
+                if not loaded:
+                    QMessageBox.warning(self, "AI Check Error", "No AI model found for current recipe.")
+                    return
+        except Exception as e:
+            QMessageBox.warning(self, "AI Check Error", f"Failed to load model:\n{str(e)}")
+            return
+
+        if not getattr(dl_page, "capture_folder", None):
+            QMessageBox.warning(self, "AI Check Error", "Capture folder is not ready.")
+            return
+
+        self.pipeline_precheck_running = True
+        self.pending_run_after_precheck = True
+        self._precheck_dl_page = dl_page
+
+        if self.current_recipe and self.current_job_title:
+            self.machine_status.setText(f"AI CHECK  ·  {self.current_recipe}  ·  Capturing image")
+        elif self.current_recipe:
+            self.machine_status.setText(f"AI CHECK  ·  {self.current_recipe}  ·  Capturing image")
+        else:
+            self.machine_status.setText("AI CHECK  ·  Capturing image")
+
+        self._precheck_camera_worker = CameraWorker(dl_page.capture_folder)
+        self._precheck_camera_worker.finished.connect(self.on_pipeline_precheck_capture_finished)
+
+        thread = threading.Thread(
+            target=self._precheck_camera_worker.capture_image,
+            daemon=True
+        )
+        thread.start()
+
+    def on_pipeline_precheck_capture_finished(self, success, message, image_path):
+        dl_page = self._precheck_dl_page
+
+        if not success or not image_path or dl_page is None:
+            self.pipeline_precheck_running = False
+            self.pending_run_after_precheck = False
+            if self.current_recipe and self.current_job_title:
+                self.machine_status.setText(f"READY  ·  {self.current_recipe}  ·  {self.current_job_title}")
+            elif self.current_recipe:
+                self.machine_status.setText(f"READY  ·  {self.current_recipe}")
+            else:
+                self.machine_status.setText("READY")
+
+            QMessageBox.warning(self, "AI Check Failed", f"Capture failed:\n{message}")
+            return
+
+        try:
+            if image_path not in dl_page.image_files:
+                dl_page.image_files.append(image_path)
+                dl_page.image_files.sort()
+
+            dl_page.current_index = dl_page.image_files.index(image_path)
+            dl_page.load_current_image()
+        except Exception as e:
+            self.pipeline_precheck_running = False
+            self.pending_run_after_precheck = False
+            QMessageBox.warning(self, "AI Check Failed", f"Failed to load captured image:\n{str(e)}")
+            return
+
+        # Temporarily reroute prediction finished signal to MainPage precheck handler
+        try:
+            dl_page.prediction_signals.finished.disconnect(dl_page.on_prediction_finished)
+        except Exception:
+            pass
+
+        try:
+            dl_page.prediction_signals.finished.connect(self.on_pipeline_precheck_prediction_finished)
+            self._original_prediction_finished_handler_swapped = True
+            QTimer.singleShot(300, lambda: dl_page.predict_current_image(None))
+        except Exception as e:
+            self.pipeline_precheck_running = False
+            self.pending_run_after_precheck = False
+            QMessageBox.warning(self, "AI Check Failed", f"Failed to hook prediction signal:\n{str(e)}")
+            return
+
+        if self.current_recipe and self.current_job_title:
+            self.machine_status.setText(f"AI CHECK  ·  {self.current_recipe}  ·  Predicting all objects")
+        elif self.current_recipe:
+            self.machine_status.setText(f"AI CHECK  ·  {self.current_recipe}  ·  Predicting all objects")
+        else:
+            self.machine_status.setText("AI CHECK  ·  Predicting all objects")
+
+        # None = predict all classes
+        QTimer.singleShot(200, lambda: dl_page.predict_current_image(None, show_progress=False))
+
+    def get_expected_object_names_for_precheck(self, dl_page):
+        """
+        Expected objects = all valid classes defined in current YOLO model
+        Ignore placeholders like '?'
+        """
+        try:
+            if hasattr(dl_page, "current_model") and dl_page.current_model is not None:
+                names = getattr(dl_page.current_model, "names", {})
+
+                if isinstance(names, dict):
+                    result = []
+                    for k in sorted(names.keys()):
+                        name = str(names[k]).strip()
+                        if not name or name == "?":
+                            continue
+                        result.append(name)
+                    return result
+
+                if isinstance(names, list):
+                    result = []
+                    for x in names:
+                        name = str(x).strip()
+                        if not name or name == "?":
+                            continue
+                        result.append(name)
+                    return result
+
+        except Exception as e:
+            print(f"[AI CHECK] Failed to read model classes: {e}")
+
+        return []
+
+    def on_pipeline_precheck_prediction_finished(self, success, message, predictions):
+        dl_page = self._precheck_dl_page
+
+        if dl_page is not None and getattr(self, "_original_prediction_finished_handler_swapped", False):
+            try:
+                dl_page.prediction_signals.finished.disconnect(self.on_pipeline_precheck_prediction_finished)
+            except Exception:
+                pass
+
+            try:
+                dl_page.prediction_signals.finished.connect(dl_page.on_prediction_finished)
+            except Exception:
+                pass
+
+        self._original_prediction_finished_handler_swapped = False
+        self.pipeline_precheck_running = False
+
+        if not success:
+            self.pending_run_after_precheck = False
+            if self.current_recipe and self.current_job_title:
+                self.machine_status.setText(f"READY  ·  {self.current_recipe}  ·  {self.current_job_title}")
+            elif self.current_recipe:
+                self.machine_status.setText(f"READY  ·  {self.current_recipe}")
+            else:
+                self.machine_status.setText("READY")
+
+            QMessageBox.warning(self, "AI Check Failed", message)
+            return
+
+        detected_names = {
+            str(p.get("class_name", "")).strip()
+            for p in (predictions or [])
+            if str(p.get("class_name", "")).strip()
+        }
+
+        expected_names = self.get_expected_object_names_for_precheck(dl_page)
+        missing = [name for name in expected_names if name not in detected_names]
+
+        print("EXPECTED =", expected_names)
+        print("DETECTED =", sorted(detected_names))
+        print("MISSING =", missing)
+
+        if not expected_names:
+            self.pending_run_after_precheck = False
+            if self.current_recipe and self.current_job_title:
+                self.machine_status.setText(f"READY  ·  {self.current_recipe}  ·  {self.current_job_title}")
+            elif self.current_recipe:
+                self.machine_status.setText(f"READY  ·  {self.current_recipe}")
+            else:
+                self.machine_status.setText("READY")
+
+            QMessageBox.warning(
+                self,
+                "AI Check Failed",
+                "No expected object list found.\nPlease add expected_objects.json in the recipe folder, or make sure model classes are available."
+            )
+            return
+
+        if missing:
+            if self.current_recipe and self.current_job_title:
+                self.machine_status.setText(f"AI CHECK WARNING  ·  {self.current_recipe}  ·  {self.current_job_title}")
+            elif self.current_recipe:
+                self.machine_status.setText(f"AI CHECK WARNING  ·  {self.current_recipe}")
+            else:
+                self.machine_status.setText("AI CHECK WARNING")
+
+            missing_text = "\n".join(f"• {name}" for name in missing)
+
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Missing Objects Detected")
+            msg.setText(
+                "The following expected object(s) were not detected:\n\n"
+                f"{missing_text}\n\n"
+                "Do you want to continue the pipeline anyway?"
+            )
+
+            continue_btn = msg.addButton("Continue", QMessageBox.AcceptRole)
+            stop_btn = msg.addButton("Stop", QMessageBox.RejectRole)
+            msg.setDefaultButton(stop_btn)
+
+            msg.exec()
+
+            self.pending_run_after_precheck = False
+
+            if msg.clickedButton() == continue_btn:
+                if self.current_recipe and self.current_job_title:
+                    self.machine_status.setText(
+                        f"AI CHECK OVERRIDE  ·  {self.current_recipe}  ·  {self.current_job_title}")
+                elif self.current_recipe:
+                    self.machine_status.setText(f"AI CHECK OVERRIDE  ·  {self.current_recipe}")
+                else:
+                    self.machine_status.setText("AI CHECK OVERRIDE")
+
+                QTimer.singleShot(0, self.run_pipeline_after_precheck)
+                return
+            else:
+                if self.current_recipe and self.current_job_title:
+                    self.machine_status.setText(f"READY  ·  {self.current_recipe}  ·  {self.current_job_title}")
+                elif self.current_recipe:
+                    self.machine_status.setText(f"READY  ·  {self.current_recipe}")
+                else:
+                    self.machine_status.setText("READY")
+
+                QMessageBox.information(
+                    self,
+                    "Pipeline Stopped",
+                    "Pipeline was stopped because expected objects were missing."
+                )
+                return
+
+        self.pending_run_after_precheck = False
+
+        if self.current_recipe and self.current_job_title:
+            self.machine_status.setText(f"AI CHECK PASS  ·  {self.current_recipe}  ·  {self.current_job_title}")
+        elif self.current_recipe:
+            self.machine_status.setText(f"AI CHECK PASS  ·  {self.current_recipe}")
+        else:
+            self.machine_status.setText("AI CHECK PASS")
+
+        QTimer.singleShot(0, self.run_pipeline_after_precheck)
 
     def _post_run(self, success):
         if success:
@@ -1357,10 +1670,22 @@ class MainPage(QWidget):
         if not self.waiting_for_mes: self.refresh_recipes(); self.load_pending_jobs()
 
     def closeEvent(self, event):
-        self.time_timer.stop();
-        self.mes_recipe_timer.stop();
+        self.time_timer.stop()
+        self.mes_recipe_timer.stop()
         self.spinner_timer.stop()
-        if self.qr_worker: self.qr_worker.stop_scan(); self.qr_worker.wait(1000); self.qr_worker = None
+
+        if self.qr_worker:
+            self.qr_worker.stop_scan()
+            self.qr_worker.wait(1000)
+            self.qr_worker = None
+
+        if self._precheck_camera_worker:
+            try:
+                self._precheck_camera_worker.stop()
+            except Exception:
+                pass
+            self._precheck_camera_worker = None
+
         super().closeEvent(event)
 
     def stop_background_tasks(self):

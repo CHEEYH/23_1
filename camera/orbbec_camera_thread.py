@@ -14,7 +14,7 @@ from PySide6.QtCore import QThread, Signal
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from pyorbbecsdk import *
-
+from pyorbbecsdk import OBSensorType, OBFormat
 
 BaseOptions = python.BaseOptions
 HandLandmarker = vision.HandLandmarker
