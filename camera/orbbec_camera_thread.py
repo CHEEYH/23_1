@@ -49,6 +49,8 @@ class OrbbecCameraThread(QThread):
     frame_signal = Signal(np.ndarray)
     error_signal = Signal(str)
     status_signal = Signal(str)
+    start_pipeline_signal = Signal()  # First trigger (show QR popup)
+    confirm_qr_signal = Signal()  # Second trigger (confirm QR)
 
     def __init__(self):
         super().__init__()
@@ -77,6 +79,7 @@ class OrbbecCameraThread(QThread):
 
         self.process_every_n = 1
 
+        # Target box (alarm)
         self.target_box = None
         self.target_box_size = 100
         self.warning_active = False
@@ -87,6 +90,31 @@ class OrbbecCameraThread(QThread):
 
         self.target_enter_time = None
         self.alarm_delay_sec = 1.0
+
+        # ========== SINGLE TRIGGER BOX WITH STATE ==========
+        self.trigger_box = None
+        self.trigger_box_size = 120
+        self.trigger_position = {
+            "relative_x": 0.4999999999999997,  # ← 确保这些存在
+            "relative_y": 0.6499999999999998,
+            "size": 60
+        }
+
+        # State machine
+        self.trigger_state = "idle"  # idle, waiting_qr, confirmed
+        self.trigger_enter_time = None
+        self.trigger_delay_sec = 1.0
+        self.trigger_was_used = False  # Prevent re-trigger in same state
+
+        # Visual colors for different states
+        self.trigger_colors = {
+            "idle": (255, 165, 0),  # Orange - ready to start
+            "waiting_qr": (0, 255, 255),  # Cyan - waiting for QR scan
+            "confirmed": (0, 255, 0)  # Green - confirmed, running
+        }
+
+        self.use_trigger_boxes = True
+        # ===================================================
 
         self.resolution_printed = False
 
@@ -163,6 +191,194 @@ class OrbbecCameraThread(QThread):
         self.current_recipe_name = recipe_name
         self.load_orbbec_homography()
 
+    def init_trigger_box(self, frame_shape):
+        """Initialize trigger box at fixed position"""
+        if self.trigger_box is not None:
+            return
+
+        h, w = frame_shape[:2]
+        size = self.trigger_position["size"]
+        center_x = int(w * self.trigger_position["relative_x"])
+        center_y = int(h * self.trigger_position["relative_y"])
+
+        x1 = max(10, min(w - size - 10, center_x - size // 2))
+        y1 = max(10, min(h - size - 10, center_y - size // 2))
+        self.trigger_box = (x1, y1, x1 + size, y1 + size)
+
+        print(f"🔲 Trigger box initialized at: {self.trigger_box}")
+
+    def set_trigger_state(self, state):
+        """Change trigger box state externally (from main_page)"""
+        self.trigger_state = state
+        self.trigger_enter_time = None
+        self.trigger_was_used = False
+        print(f"[Orbbec] Trigger state changed to: {state}")
+
+    def check_hand_in_trigger_box(self, hand_landmarks_smoothed, frame_shape):
+        """Check if hand is inside trigger box"""
+        if self.trigger_box is None:
+            return False
+
+        tx1, ty1, tx2, ty2 = self.trigger_box
+        h, w = frame_shape[:2]
+
+        tx1 = max(0, min(w - 1, tx1))
+        ty1 = max(0, min(h - 1, ty1))
+        tx2 = max(0, min(w - 1, tx2))
+        ty2 = max(0, min(h - 1, ty2))
+
+        for lm in hand_landmarks_smoothed:
+            lx = int(lm[0] * w)
+            ly = int(lm[1] * h)
+            if tx1 <= lx <= tx2 and ty1 <= ly <= ty2:
+                return True
+        return False
+
+    def draw_trigger_box(self, frame, hand_inside=False):
+        """Draw trigger box with state-appropriate styling"""
+        if self.trigger_box is None or not self.use_trigger_boxes:
+            return frame
+
+        x1, y1, x2, y2 = self.trigger_box
+        color = self.trigger_colors.get(self.trigger_state, (255, 165, 0))
+
+        # Different labels based on state
+        labels = {
+            "idle": "HAND HERE TO START",
+            "waiting_qr": "SCAN QR THEN HOLD HERE",
+            "confirmed": "✓ CONFIRMED - RUNNING"
+        }
+        label = labels.get(self.trigger_state, "TRIGGER BOX")
+
+        # Determine if we should show countdown
+        show_countdown = hand_inside and not self.trigger_was_used and self.trigger_enter_time is not None
+
+        # Draw box with thickness based on state
+        thickness = 4 if hand_inside else 3
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+
+        # Draw corner markers for better visibility
+        corner_len = 20
+        cv2.line(frame, (x1, y1), (x1 + corner_len, y1), color, 3)
+        cv2.line(frame, (x1, y1), (x1, y1 + corner_len), color, 3)
+        cv2.line(frame, (x2, y1), (x2 - corner_len, y1), color, 3)
+        cv2.line(frame, (x2, y1), (x2, y1 + corner_len), color, 3)
+        cv2.line(frame, (x1, y2), (x1 + corner_len, y2), color, 3)
+        cv2.line(frame, (x1, y2), (x1, y2 - corner_len), color, 3)
+        cv2.line(frame, (x2, y2), (x2 - corner_len, y2), color, 3)
+        cv2.line(frame, (x2, y2), (x2, y2 - corner_len), color, 3)
+
+        # Label with background for readability
+        label_x = x1 + (x2 - x1) // 2 - 80
+        label_y = max(y1 - 10, 25)
+
+        # Draw text background
+        (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        cv2.rectangle(frame,
+                      (label_x - 5, label_y - text_h - 3),
+                      (label_x + text_w + 5, label_y + 5),
+                      (0, 0, 0, 0.6), -1)
+
+        cv2.putText(frame, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+        # Show countdown if hand is inside and not yet triggered
+        if show_countdown:
+            elapsed = current_time_since_enter = time.perf_counter() - self.trigger_enter_time
+            if elapsed < self.trigger_delay_sec:
+                remain = self.trigger_delay_sec - elapsed
+
+                # Draw countdown circle
+                center_x = x1 + (x2 - x1) // 2
+                center_y = y2 + 25
+                radius = 20
+
+                # Background circle
+                cv2.circle(frame, (center_x, center_y), radius, (50, 50, 50), -1)
+                cv2.circle(frame, (center_x, center_y), radius, color, 2)
+
+                # Progress arc
+                angle = int(360 * (elapsed / self.trigger_delay_sec))
+                cv2.ellipse(frame, (center_x, center_y), (radius - 3, radius - 3), 90, 0, angle, color, 3)
+
+                # Text
+                cv2.putText(frame, f"{int(remain)}", (center_x - 12, center_y + 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                # Progress bar at bottom of box
+                progress = elapsed / self.trigger_delay_sec
+                bar_width = int((x2 - x1) * progress)
+                cv2.rectangle(frame, (x1, y2 + 5), (x1 + bar_width, y2 + 12), (0, 255, 0), -1)
+                cv2.rectangle(frame, (x1, y2 + 5), (x2, y2 + 12), (100, 100, 100), 1)
+
+        return frame
+
+    # Add this method to be called from draw_hands_and_target
+    def update_trigger_logic(self, hand_in_box, current_time):
+        """Handle trigger state machine for single box with two states"""
+        if not self.use_trigger_boxes:
+            return
+
+        # Don't process if already confirmed (final state)
+        if self.trigger_state == "confirmed":
+            return
+
+        if hand_in_box and not self.trigger_was_used:
+            if self.trigger_enter_time is None:
+                self.trigger_enter_time = current_time
+                self.status_signal.emit(f"Hand in trigger box - holding to {self.trigger_state}")
+
+            elapsed = current_time - self.trigger_enter_time
+
+            if elapsed >= self.trigger_delay_sec:
+                self.trigger_was_used = True
+                self.trigger_enter_time = None
+
+                if self.trigger_state == "idle":
+                    # First trigger: start pipeline (show QR)
+                    print("[Orbbec] 🖐️ First trigger - Starting pipeline (QR popup)")
+                    self.status_signal.emit("Triggered! Opening QR scanner...")
+                    self.start_pipeline_signal.emit()
+
+                elif self.trigger_state == "waiting_qr":
+                    # Second trigger: confirm QR and run pipeline
+                    print("[Orbbec] 🖐️ Second trigger - Confirming QR and running pipeline")
+                    self.status_signal.emit("QR confirmed! Starting assembly...")
+                    self.confirm_qr_signal.emit()
+        else:
+            # Reset if hand leaves before triggering
+            if not hand_in_box:
+                if self.trigger_enter_time is not None:
+                    self.status_signal.emit("Hand left trigger box - cancelled")
+                self.trigger_enter_time = None
+
+    def set_trigger_box_position(self, relative_x=0.85, relative_y=0.85, size=120):
+        """
+        动态改变 trigger box 位置
+
+        Args:
+            relative_x: 0.0 = 左边, 1.0 = 右边
+            relative_y: 0.0 = 顶部, 1.0 = 底部
+            size: 像素大小
+        """
+        # 更新位置配置
+        self.trigger_position = {
+            "relative_x": relative_x,
+            "relative_y": relative_y,
+            "size": size
+        }
+
+        # 重置 trigger box，下次绘制时会重新计算
+        self.trigger_box = None
+
+        print(f"🔲 Trigger box position updated to: X={relative_x}, Y={relative_y}, size={size}")
+
+        # 如果有当前帧，立即重新初始化
+        if hasattr(self, 'latest_frame') and self.latest_frame is not None:
+            self.init_trigger_box(self.latest_frame.shape)
+            print(f"   New trigger box position: {self.trigger_box}")
+
+    # =============================================
+
     def randomize_target(self):
         self.request_new_target = True
         self.target_enter_time = None
@@ -177,7 +393,6 @@ class OrbbecCameraThread(QThread):
                 print("\n========== INPUT RAW BBOX ==========")
                 print(f"bbox = {bbox}")
 
-                # load homography if not loaded yet
                 if self.orbbec_homography is None:
                     self.load_orbbec_homography()
 
@@ -341,8 +556,8 @@ class OrbbecCameraThread(QThread):
             track["candidate_count"] = 1
 
         if (
-            track["candidate_count"] >= self.label_switch_threshold
-            and score >= self.handedness_score_threshold
+                track["candidate_count"] >= self.label_switch_threshold
+                and score >= self.handedness_score_threshold
         ):
             track["stable_label"] = raw_label
             track["candidate_count"] = 0
@@ -497,7 +712,6 @@ class OrbbecCameraThread(QThread):
         if external_bbox is not None and self.use_external_target:
             x1, y1, x2, y2 = external_bbox
 
-            # clamp 到畫面範圍內
             x1 = max(0, min(w - 1, x1))
             y1 = max(0, min(h - 1, y1))
             x2 = max(0, min(w - 1, x2))
@@ -576,6 +790,9 @@ class OrbbecCameraThread(QThread):
 
         assigned_detections = self.match_hands_to_tracks(detections)
 
+        # Track if hand is inside trigger box
+        hand_in_trigger = False
+
         for det in assigned_detections:
             hand = det["hand_landmarks"]
             raw_label = det["raw_label"]
@@ -615,6 +832,7 @@ class OrbbecCameraThread(QThread):
                 2
             )
 
+            # Check for target box hit (alarm condition)
             for lm in smoothed:
                 lx = int(lm[0] * frame.shape[1])
                 ly = int(lm[1] * frame.shape[0])
@@ -622,6 +840,13 @@ class OrbbecCameraThread(QThread):
                     hit_target = True
                     break
 
+            # ========== Check if hand is inside trigger box ==========
+            if self.use_trigger_boxes:
+                if self.check_hand_in_trigger_box(smoothed, frame.shape):
+                    hand_in_trigger = True
+            # ========================================================
+
+        # Handle target box alarm logic (existing)
         current_time = time.perf_counter()
 
         if hit_target:
@@ -668,6 +893,19 @@ class OrbbecCameraThread(QThread):
         else:
             self.target_enter_time = None
             self.warning_active = False
+
+        # ========== NEW: Handle trigger box logic (single box with state) ==========
+        if self.use_trigger_boxes:
+            # Initialize trigger box if needed
+            if self.trigger_box is None:
+                self.init_trigger_box(frame.shape)
+
+            # Draw trigger box with current state
+            frame = self.draw_trigger_box(frame, hand_in_trigger)
+
+            # Update trigger state machine
+            self.update_trigger_logic(hand_in_trigger, current_time)
+        # ==========================================================================
 
         return frame
 

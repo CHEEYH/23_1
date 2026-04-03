@@ -306,6 +306,10 @@ class MainPage(QWidget):
         self.last_precheck_image = None
         self._original_prediction_finished_handler_swapped = False
 
+        self.waiting_for_qr_confirm = False  # After QR scanned, waiting for hand confirm
+        self.orbbec_thread = None
+        self.waiting_for_hand_confirm = False
+
     # ── Theme ──────────────────────────────────────────────────────────────
 
     def _apply_palette(self):
@@ -1031,6 +1035,209 @@ class MainPage(QWidget):
         self.pending_jobs = PipelineRunner.get_pending_jobs(self.current_recipe);
         self.update_pending_display()
 
+    # ── Hand Trigger ─────────────────────────────────────────────────────────────────
+
+    def connect_orbbec_trigger(self, orbbec_thread):
+        """Connect to Orbbec camera thread's trigger signals"""
+        self.orbbec_thread = orbbec_thread
+        if orbbec_thread:
+            # Connect both signals
+            orbbec_thread.start_pipeline_signal.connect(self.on_start_pipeline_trigger)
+            orbbec_thread.confirm_qr_signal.connect(self.on_confirm_qr_trigger)
+            print("[MainPage] ✅ Connected to Orbbec trigger signals")
+
+            # Set initial state
+            orbbec_thread.set_trigger_state("idle")
+            orbbec_thread.use_trigger_boxes = True
+
+    def on_start_pipeline_trigger(self):
+        """First hand gesture: Show QR popup"""
+        print("[MainPage] 🖐️ Start trigger received - showing QR popup")
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self.show_qr_for_hand_trigger)
+
+    def show_qr_for_hand_trigger(self):
+        """Show QR popup and set state for hand confirmation"""
+        # Check if we can start
+        if self.waiting_for_mes:
+            self.show_status_message("Cannot start: Waiting for MES recipe", "warning")
+            if self.orbbec_thread:
+                self.orbbec_thread.set_trigger_state("idle")
+            return
+
+        if not self.current_recipe:
+            self.show_status_message("Cannot start: No recipe selected", "warning")
+            if self.orbbec_thread:
+                self.orbbec_thread.set_trigger_state("idle")
+            return
+
+        if self.pipeline_running or self.pipeline_precheck_running:
+            self.show_status_message("Cannot start: Pipeline already running", "warning")
+            if self.orbbec_thread:
+                self.orbbec_thread.set_trigger_state("idle")
+            return
+
+        # Set state to waiting for QR confirmation
+        self.waiting_for_qr_confirm = True
+
+        # Update Orbbec trigger box state
+        if self.orbbec_thread:
+            self.orbbec_thread.set_trigger_state("waiting_qr")
+
+        # Show QR popup
+        self.show_qr_check_popup_for_hand_trigger()
+
+    def show_qr_check_popup_for_hand_trigger(self):
+        """Show QR popup that waits for hand confirmation"""
+        if self.qr_dialog and self.qr_dialog.isVisible():
+            return
+
+        self.qr_result_ok = False
+        self.qr_dialog = QRScanDialog(self)
+        self.qr_dialog.status_label.setText("Scan QR code, then use hand gesture to confirm")
+        self.qr_dialog.confirm_btn.setText("CONFIRM WITH HAND")
+        self.qr_dialog.confirm_btn.setEnabled(False)
+
+        # Override confirm button
+        self.qr_dialog.confirm_btn.clicked.disconnect()
+        self.qr_dialog.confirm_btn.clicked.connect(self.mark_qr_ready_for_hand)
+        self.qr_dialog.cancel_btn.clicked.connect(self.cancel_qr_for_hand_trigger)
+
+        # Start QR worker
+        self.qr_worker = QRCheckWorker(host="127.0.0.1", port=1220, parent=self)
+        self.qr_worker.status_changed.connect(self.on_qr_status_changed)
+        self.qr_worker.message_received.connect(self.on_qr_message_received_for_hand)
+        self.qr_worker.error_occurred.connect(self.on_qr_error)
+        self.qr_worker.finished_scan.connect(self.on_qr_finished)
+        self.qr_worker.start()
+
+        self.qr_dialog.exec()
+
+    def on_qr_message_received_for_hand(self, text):
+        """QR scanned successfully"""
+        if not self.qr_dialog:
+            return
+
+        clean = text.strip()
+        if not clean:
+            return
+
+        self.qr_result_ok = True
+        self.qr_dialog.status_label.setText("✓ QR SCANNED! Use hand gesture to confirm")
+        self.qr_dialog.status_label.setStyleSheet(
+            "color: #00FF88; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
+        self.qr_dialog.result_box.append(clean)
+
+        self.qr_dialog.confirm_btn.setEnabled(True)
+        self.qr_dialog.confirm_btn.setText("✓ READY FOR HAND CONFIRM")
+
+    def mark_qr_ready_for_hand(self):
+        """QR is scanned, ready for hand confirmation"""
+        if not self.qr_result_ok:
+            QMessageBox.warning(self, "No QR Data", "Please scan QR code first.", QMessageBox.Ok)
+            return
+
+        self.qr_check_passed = True
+
+        self.qr_dialog.status_label.setText("✓ QR verified! Place hand in trigger box to start")
+        self.qr_dialog.status_label.setStyleSheet(
+            "color: #00AAFF; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
+        self.qr_dialog.confirm_btn.setEnabled(False)
+        self.qr_dialog.confirm_btn.setText("WAITING FOR HAND...")
+
+        print("[MainPage] QR ready - waiting for hand confirmation")
+
+    def on_confirm_qr_trigger(self):
+        """Second hand gesture: Confirm QR and run pipeline"""
+        print("[MainPage] 🖐️ Confirm trigger received - running pipeline")
+
+        from PySide6.QtCore import QTimer
+
+        # ========== 修改：不检查 qr_check_passed，直接继续 ==========
+        # 或者检查 orbbec 状态
+        if self.orbbec_thread and self.orbbec_thread.trigger_state != "waiting_qr":
+            print(f"[MainPage] Wrong state: {self.orbbec_thread.trigger_state}, ignoring")
+            return
+
+        # 如果 QR 还没扫描完成，设置标志
+        if not self.qr_check_passed:
+            print("[MainPage] QR not checked yet, but confirming anyway...")
+            self.qr_check_passed = True
+            self.qr_result_ok = True
+        # ============================================================
+
+        # 防止重复触发
+        if self.pipeline_running or self.pipeline_precheck_running:
+            print("[MainPage] Pipeline already running, ignoring confirm")
+            return
+
+        # Close QR dialog if still open
+        if self.qr_dialog:
+            self.qr_dialog.accept()
+            self.qr_dialog.deleteLater()
+            self.qr_dialog = None
+
+        # Clean up QR worker
+        if self.qr_worker:
+            self.qr_worker.stop_scan()
+            self.qr_worker.wait(300)
+            self.qr_worker.deleteLater()
+            self.qr_worker = None
+
+        # Update Orbbec state to confirmed
+        if self.orbbec_thread:
+            self.orbbec_thread.set_trigger_state("confirmed")
+            print("[MainPage] Orbbec state changed to: confirmed")
+
+        # Reset flags
+        self.waiting_for_qr_confirm = False
+        self.waiting_for_hand_confirm = False
+
+        # Start pipeline
+        print("[MainPage] 🚀 Starting pipeline via hand gesture confirmation...")
+        QTimer.singleShot(0, self.start_pipeline_precheck)
+
+    def cancel_qr_for_hand_trigger(self):
+        """Cancel QR process"""
+        self.qr_check_passed = False
+        self.qr_result_ok = False
+        self.waiting_for_qr_confirm = False
+
+        if self.qr_dialog:
+            self.qr_dialog.reject()
+            self.qr_dialog.deleteLater()
+            self.qr_dialog = None
+
+        if self.qr_worker:
+            self.qr_worker.stop_scan()
+            self.qr_worker.wait(500)
+            self.qr_worker.deleteLater()
+            self.qr_worker = None
+
+        # Reset Orbbec state back to idle
+        if self.orbbec_thread:
+            self.orbbec_thread.set_trigger_state("idle")
+
+        # Re-enable run button
+        if hasattr(self, 'run_button'):
+            self.run_button.setEnabled(True)
+
+    def show_status_message(self, message, level="info"):
+        """Show status message in UI"""
+        colors = {
+            "info": "#00AAFF",
+            "warning": "#FFAA00",
+            "error": "#FF3344",
+            "success": "#00FF88"
+        }
+        color = colors.get(level, "#FFFFFF")
+
+        if hasattr(self, 'machine_status'):
+            self.machine_status.setText(message[:50])
+            self.machine_status.setStyleSheet(f"color: {color}; background: transparent;")
+
+        print(f"[{level.upper()}] {message}")
+
     # ── QR ─────────────────────────────────────────────────────────────────
 
     def show_qr_check_popup(self):
@@ -1390,6 +1597,53 @@ class MainPage(QWidget):
         print("DETECTED =", sorted(detected_names))
         print("MISSING =", missing)
 
+        H = self.load_precheck_orbbec_homography()
+
+        print("\n=== PRECHECK TRANSFORMED COORDINATES ===")
+        for i, p in enumerate(predictions or [], 1):
+            class_name = str(p.get("class_name", "")).strip()
+            conf = float(p.get("confidence", 0.0))
+            bbox = p.get("bbox", [])
+
+            if not bbox or len(bbox) < 4:
+                print(f"[{i}] {class_name} | conf={conf:.3f} | invalid bbox = {bbox}")
+                continue
+
+            print(f"[{i}] {class_name} | conf={conf:.3f} | raw bbox = {bbox}")
+
+            if H is None:
+                print(f"[{i}] {class_name} | homography not loaded")
+                continue
+
+            try:
+                x1, y1, x2, y2 = self.map_bbox_with_homography_precheck(bbox, H)
+
+                x1 = int(round(x1))
+                y1 = int(round(y1))
+                x2 = int(round(x2))
+                y2 = int(round(y2))
+
+                # 如果你知道 Orbbec frame 尺寸固定就是 1280x720，也可以直接这样 clamp
+                frame_w, frame_h = 1280, 720
+                x1 = max(0, min(frame_w - 1, x1))
+                y1 = max(0, min(frame_h - 1, y1))
+                x2 = max(0, min(frame_w - 1, x2))
+                y2 = max(0, min(frame_h - 1, y2))
+
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+
+                print(
+                    f"[{i}] {class_name} | transformed bbox = "
+                    f"({x1}, {y1}, {x2}, {y2}) | "
+                    f"center=({center_x:.1f}, {center_y:.1f})"
+                )
+
+            except Exception as e:
+                print(f"[{i}] {class_name} | transform failed: {e}")
+
+        print("=== END PRECHECK TRANSFORMED COORDINATES ===\n")
+
         if not expected_names:
             self.pending_run_after_precheck = False
             if self.current_recipe and self.current_job_title:
@@ -1469,6 +1723,86 @@ class MainPage(QWidget):
             self.machine_status.setText("AI CHECK PASS")
 
         QTimer.singleShot(0, self.run_pipeline_after_precheck)
+
+    def load_precheck_orbbec_homography(self):
+        import os
+        import json
+        import numpy as np
+
+        if not self.current_recipe:
+            print("[PRECHECK] No current recipe, cannot load homography")
+            return None
+
+        homography_path = os.path.join(
+            "recipes",
+            self.current_recipe,
+            "orbbec_homography.json"
+        )
+
+        if not os.path.exists(homography_path):
+            print(f"[PRECHECK] Homography file not found: {homography_path}")
+            return None
+
+        try:
+            with open(homography_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # 兼容不同 json 结构
+            if isinstance(data, dict):
+                if "homography_matrix" in data:
+                    matrix_data = data["homography_matrix"]
+                elif "matrix" in data:
+                    matrix_data = data["matrix"]
+                elif "H" in data:
+                    matrix_data = data["H"]
+                else:
+                    # 尝试找第一个像 3x3 matrix 的值
+                    matrix_data = None
+                    for v in data.values():
+                        if isinstance(v, list) and len(v) == 3:
+                            matrix_data = v
+                            break
+
+                    if matrix_data is None:
+                        raise ValueError(f"Unsupported homography JSON format: keys={list(data.keys())}")
+            else:
+                matrix_data = data
+
+            H = np.array(matrix_data, dtype=np.float32)
+
+            if H.shape != (3, 3):
+                raise ValueError(f"Invalid homography shape: {H.shape}, expected (3, 3)")
+
+            print(f"[PRECHECK] Loaded homography from: {homography_path}")
+            print(H)
+            return H
+
+        except Exception as e:
+            print(f"[PRECHECK] Failed to load homography: {e}")
+            return None
+
+    def map_bbox_with_homography_precheck(self, bbox, H):
+        import numpy as np
+        import cv2
+
+        x1, y1, x2, y2 = bbox[:4]
+
+        corners = np.array([
+            [[x1, y1]],
+            [[x2, y1]],
+            [[x2, y2]],
+            [[x1, y2]]
+        ], dtype=np.float32)
+
+        transformed = cv2.perspectiveTransform(corners, H)
+
+        xs = transformed[:, 0, 0]
+        ys = transformed[:, 0, 1]
+
+        nx1, ny1 = xs.min(), ys.min()
+        nx2, ny2 = xs.max(), ys.max()
+
+        return nx1, ny1, nx2, ny2
 
     def _post_run(self, success):
         if success:

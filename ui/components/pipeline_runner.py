@@ -1393,16 +1393,19 @@ class PipelineRunner:
                         if hasattr(temp_model, 'names'):
                             for cid, name in temp_model.names.items():
                                 if product_name.lower() == name.lower():
-                                    class_id = cid; break
+                                    class_id = cid;
+                                    break
                             if class_id is None:
                                 for cid, name in temp_model.names.items():
                                     if product_name.lower() in name.lower() or name.lower() in product_name.lower():
-                                        class_id = cid; break
+                                        class_id = cid;
+                                        break
                             if class_id is None and '_' in product_name:
                                 lp = product_name.split('_')[-1]
                                 for cid, name in temp_model.names.items():
                                     if lp.lower() == name.lower() or lp.lower() in name.lower():
-                                        class_id = cid; break
+                                        class_id = cid;
+                                        break
                         del temp_model
                     except Exception as e:
                         print(f"DEBUG: Error getting class mapping: {e}")
@@ -1423,16 +1426,23 @@ class PipelineRunner:
         hdr_bar.setFixedHeight(80)
         hdr_bar.setStyleSheet("background-color:#050D18;border-bottom:2px solid #00AAFF;")
         hdr_row = QHBoxLayout(hdr_bar)
-        hdr_row.setContentsMargins(14, 0, 14, 0); hdr_row.setSpacing(12)
+        hdr_row.setContentsMargins(14, 0, 14, 0);
+        hdr_row.setSpacing(12)
         asm_step_badge = QLabel(f"STEP {step_num}/{total_steps}")
-        asm_step_badge.setStyleSheet("font-size:16px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:4px 14px;letter-spacing:2px;font-family:Consolas;")
+        asm_step_badge.setStyleSheet(
+            "font-size:16px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:4px 14px;letter-spacing:2px;font-family:Consolas;")
         asm_title = QLabel(product_name.upper())
-        asm_title.setStyleSheet("font-size:26px;font-weight:900;color:#FFFFFF;letter-spacing:2px;font-family:Consolas;background:transparent;")
+        asm_title.setStyleSheet(
+            "font-size:26px;font-weight:900;color:#FFFFFF;letter-spacing:2px;font-family:Consolas;background:transparent;")
         model_badge = QLabel("CLASS FILTER ACTIVE" if class_id is not None else "NO CLASS FILTER")
         _mc = "#00FF88" if class_id is not None else "#1A4A6A"
         _mb = "#00FF8844" if class_id is not None else "#0E2A40"
-        model_badge.setStyleSheet(f"font-size:14px;color:{_mc};background:#030810;border:1px solid {_mb};padding:4px 12px;letter-spacing:2px;font-family:Consolas;")
-        hdr_row.addWidget(asm_step_badge); hdr_row.addWidget(asm_title); hdr_row.addStretch(); hdr_row.addWidget(model_badge)
+        model_badge.setStyleSheet(
+            f"font-size:14px;color:{_mc};background:#030810;border:1px solid {_mb};padding:4px 12px;letter-spacing:2px;font-family:Consolas;")
+        hdr_row.addWidget(asm_step_badge);
+        hdr_row.addWidget(asm_title);
+        hdr_row.addStretch();
+        hdr_row.addWidget(model_badge)
         layout.addWidget(hdr_bar)
         # Cyan separator line — sits on top of everything below
         sep_line = QWidget()
@@ -1443,7 +1453,8 @@ class PipelineRunner:
         splitter_wrap = QWidget()
         splitter_wrap.setStyleSheet("background:#030810;")
         sw_layout = QVBoxLayout(splitter_wrap)
-        sw_layout.setContentsMargins(0, 0, 0, 0); sw_layout.setSpacing(0)
+        sw_layout.setContentsMargins(0, 0, 0, 0);
+        sw_layout.setSpacing(0)
         splitter = QSplitter(Qt.Horizontal)
         splitter.setStyleSheet("QSplitter::handle { background-color: #0E2A40; width:2px; }")
         sw_layout.addWidget(splitter)
@@ -1457,10 +1468,17 @@ class PipelineRunner:
         ref_header = QWidget()
         ref_header.setFixedHeight(44)
         ref_header.setStyleSheet("background:#050D18;border-bottom:1px solid #0E2A40;border-right:1px solid #0E2A40;")
-        rh_row = QHBoxLayout(ref_header); rh_row.setContentsMargins(10,0,10,0); rh_row.setSpacing(8)
-        rh_dot = QLabel("●"); rh_dot.setStyleSheet("font-size:14px;color:#00AAFF;background:transparent;")
-        rh_lbl = QLabel("PRODUCT IMAGE"); rh_lbl.setStyleSheet("font-size:16px;font-weight:900;color:#AACCEE;letter-spacing:3px;font-family:Consolas;background:transparent;")
-        rh_row.addWidget(rh_dot); rh_row.addWidget(rh_lbl); rh_row.addStretch()
+        rh_row = QHBoxLayout(ref_header);
+        rh_row.setContentsMargins(10, 0, 10, 0);
+        rh_row.setSpacing(8)
+        rh_dot = QLabel("●");
+        rh_dot.setStyleSheet("font-size:14px;color:#00AAFF;background:transparent;")
+        rh_lbl = QLabel("PRODUCT IMAGE");
+        rh_lbl.setStyleSheet(
+            "font-size:16px;font-weight:900;color:#AACCEE;letter-spacing:3px;font-family:Consolas;background:transparent;")
+        rh_row.addWidget(rh_dot);
+        rh_row.addWidget(rh_lbl);
+        rh_row.addStretch()
         left_layout.addWidget(ref_header)
 
         ref_image_label = QLabel()
@@ -1473,7 +1491,8 @@ class PipelineRunner:
                 ref_image_label.setPixmap(pixmap.scaled(550, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         else:
             ref_image_label.setText(f"⚠ Product image not found\n\n{product_name}")
-            ref_image_label.setStyleSheet("color: #FFAA00; font-size: 18px; font-family: Consolas; background-color: #0A0800; border: 1px solid #553300; border-left: 3px solid #FFAA00; padding: 20px;")
+            ref_image_label.setStyleSheet(
+                "color: #FFAA00; font-size: 18px; font-family: Consolas; background-color: #0A0800; border: 1px solid #553300; border-left: 3px solid #FFAA00; padding: 20px;")
         left_layout.addWidget(ref_image_label, stretch=1)
 
         # RIGHT: Detection
@@ -1485,11 +1504,17 @@ class PipelineRunner:
         det_panel_hdr = QWidget()
         det_panel_hdr.setFixedHeight(44)
         det_panel_hdr.setStyleSheet("background:#050D18;border-bottom:1px solid #0E2A40;")
-        dph_row = QHBoxLayout(det_panel_hdr); dph_row.setContentsMargins(10,0,10,0); dph_row.setSpacing(8)
-        dph_dot = QLabel("●"); dph_dot.setStyleSheet("font-size:14px;color:#FF3344;background:transparent;")
+        dph_row = QHBoxLayout(det_panel_hdr);
+        dph_row.setContentsMargins(10, 0, 10, 0);
+        dph_row.setSpacing(8)
+        dph_dot = QLabel("●");
+        dph_dot.setStyleSheet("font-size:14px;color:#FF3344;background:transparent;")
         detection_header = QLabel("DETECTION RESULT")
-        detection_header.setStyleSheet("font-size:16px;font-weight:900;color:#AACCEE;letter-spacing:3px;font-family:Consolas;background:transparent;")
-        dph_row.addWidget(dph_dot); dph_row.addWidget(detection_header); dph_row.addStretch()
+        detection_header.setStyleSheet(
+            "font-size:16px;font-weight:900;color:#AACCEE;letter-spacing:3px;font-family:Consolas;background:transparent;")
+        dph_row.addWidget(dph_dot);
+        dph_row.addWidget(detection_header);
+        dph_row.addStretch()
         right_layout.addWidget(det_panel_hdr)
 
         detection_container = QWidget()
@@ -1515,17 +1540,20 @@ class PipelineRunner:
 
         dot_count = 0
         loading_timer = QTimer()
+
         def update_loading_text():
             nonlocal dot_count
             dot_count = (dot_count + 1) % 4
             loading_label.setText(f"⏳ Processing{'.' * dot_count}")
+
         loading_timer.timeout.connect(update_loading_text)
         loading_timer.start(500)
         loading_layout.addWidget(loading_label)
 
         loading_message = QLabel("Capturing image and running AI detection...")
         loading_message.setAlignment(Qt.AlignCenter)
-        loading_message.setStyleSheet("font-size: 16px; color: #7AAAD4; margin-top: 20px; font-family: Consolas; background-color: transparent;")
+        loading_message.setStyleSheet(
+            "font-size: 16px; color: #7AAAD4; margin-top: 20px; font-family: Consolas; background-color: transparent;")
         loading_layout.addWidget(loading_message)
 
         progress_bar = QProgressBar()
@@ -1549,12 +1577,18 @@ class PipelineRunner:
         right_layout.addWidget(detection_container, stretch=1)
 
         # Hidden labels kept for logic compatibility
-        cal_status_label = QLabel(); cal_status_label.hide()
-        detection_status = QLabel("STATUS: Initializing camera..."); detection_status.hide()
-        detection_result = QLabel("DETECTED: --"); detection_result.hide()
-        confidence_label = QLabel("CONFIDENCE: --"); confidence_label.hide()
-        coord_status_label = QLabel("COORDINATES: Not sent"); coord_status_label.hide()
-        info_frame = QFrame(); info_frame.hide()
+        cal_status_label = QLabel();
+        cal_status_label.hide()
+        detection_status = QLabel("STATUS: Initializing camera...");
+        detection_status.hide()
+        detection_result = QLabel("DETECTED: --");
+        detection_result.hide()
+        confidence_label = QLabel("CONFIDENCE: --");
+        confidence_label.hide()
+        coord_status_label = QLabel("COORDINATES: Not sent");
+        coord_status_label.hide()
+        info_frame = QFrame();
+        info_frame.hide()
 
         splitter.addWidget(left_widget)
         splitter.addWidget(right_widget)
@@ -1582,8 +1616,10 @@ class PipelineRunner:
             nonlocal capture_runner
             if capture_runner is not None:
                 try:
-                    if hasattr(capture_runner, "stop"): capture_runner.stop()
-                    elif hasattr(capture_runner, "close"): capture_runner.close()
+                    if hasattr(capture_runner, "stop"):
+                        capture_runner.stop()
+                    elif hasattr(capture_runner, "close"):
+                        capture_runner.close()
                 except Exception as e:
                     print(f"⚠️ Error cleaning capture runner: {e}")
                 capture_runner = None
@@ -1632,8 +1668,13 @@ class PipelineRunner:
         btn_wrap = QWidget()
         btn_wrap.setFixedHeight(66)
         btn_wrap.setStyleSheet("background:#030810;border-top:1px solid #0E2A40;")
-        bwl = QHBoxLayout(btn_wrap); bwl.setContentsMargins(10,8,10,8); bwl.setSpacing(8)
-        bwl.addWidget(cancel_btn); bwl.addStretch(); bwl.addWidget(retry_btn); bwl.addWidget(verify_btn)
+        bwl = QHBoxLayout(btn_wrap);
+        bwl.setContentsMargins(10, 8, 10, 8);
+        bwl.setSpacing(8)
+        bwl.addWidget(cancel_btn);
+        bwl.addStretch();
+        bwl.addWidget(retry_btn);
+        bwl.addWidget(verify_btn)
         layout.addWidget(btn_wrap)
 
         # State variables
@@ -1675,7 +1716,8 @@ class PipelineRunner:
 
         def _set_detection_header(text, color, bg):
             detection_header.setText(text)
-            detection_header.setStyleSheet(f"font-size:16px;font-weight:900;color:{color};letter-spacing:3px;font-family:Consolas;background:transparent;")
+            detection_header.setStyleSheet(
+                f"font-size:16px;font-weight:900;color:{color};letter-spacing:3px;font-family:Consolas;background:transparent;")
             dph_dot.setStyleSheet(f"font-size:14px;color:{color};background:transparent;")
 
         orbbec_thread = None
@@ -1700,6 +1742,19 @@ class PipelineRunner:
             except Exception as e:
                 detection_status.setText(f"❌ Live view error: {str(e)[:60]}")
 
+        # ========== NEW: Trigger box handler for pipeline start ==========
+        def on_pipeline_trigger_from_orbbec():
+            """Called when hand gesture triggers pipeline start"""
+            print("[Assembly Step] Pipeline trigger received from hand gesture!")
+
+            # This simulates clicking the VERIFY button
+            if verify_btn.isEnabled():
+                QTimer.singleShot(100, verify_btn.click)
+            else:
+                print("[Assembly Step] Verify button not enabled, cannot auto-trigger")
+
+        # ================================================================
+
         def start_orbbec_live_view():
             nonlocal orbbec_thread
 
@@ -1707,11 +1762,33 @@ class PipelineRunner:
                 return
 
             try:
+                from camera.orbbec_camera_thread import OrbbecCameraThread
                 orbbec_thread = OrbbecCameraThread()
+
+                # Set recipe name for homography
+                orbbec_thread.set_recipe_name(recipe_name)
+
+                # Enable and configure trigger box
+                orbbec_thread.use_trigger_box = True
+                orbbec_thread.trigger_delay_sec = 1.0
+                orbbec_thread.trigger_fixed_position = {
+                    "relative_x": 0.85,
+                    "relative_y": 0.85,
+                    "size": 120
+                }
+
+                # Connect signals
                 orbbec_thread.frame_signal.connect(update_orbbec_view)
                 orbbec_thread.status_signal.connect(lambda msg: detection_status.setText(msg))
                 orbbec_thread.error_signal.connect(lambda msg: detection_status.setText(f"❌ {msg}"))
+
+                # Connect pipeline trigger signal (NEW)
+                orbbec_thread.pipeline_trigger_signal.connect(on_pipeline_trigger_from_orbbec)
+
                 orbbec_thread.start()
+
+                print("[Assembly Step] Orbbec thread started with trigger box enabled")
+
             except Exception as e:
                 detection_status.setText(f"❌ Failed to start Orbbec: {str(e)[:60]}")
 
@@ -1969,6 +2046,9 @@ class PipelineRunner:
             if orbbec_thread is not None:
                 try:
                     orbbec_thread.clear_external_target_bbox()
+                    # Reset trigger box state for retry
+                    orbbec_thread.trigger_was_triggered = False
+                    orbbec_thread.trigger_enter_time = None
                 except Exception as e:
                     print(f"❌ Failed to clear Orbbec target bbox on retry: {e}")
 
@@ -1988,7 +2068,8 @@ class PipelineRunner:
             stop_orbbec_live_view()
             nonlocal captured_image_path, detection_results, output_path, target_detected_successfully
             if not target_detected_successfully:
-                QMessageBox.warning(parent_widget, "⚠️ Target Not Detected", "Cannot continue because target class was not detected.\nPlease cancel and try again.")
+                QMessageBox.warning(parent_widget, "⚠️ Target Not Detected",
+                                    "Cannot continue because target class was not detected.\nPlease cancel and try again.")
                 return
             if captured_image_path and os.path.exists(captured_image_path):
                 selection['pipeline_capture_path'] = captured_image_path
@@ -2074,12 +2155,14 @@ class PipelineRunner:
 
                     image_title = QLabel("ASSEMBLY IMAGE")
                     image_title.setAlignment(Qt.AlignCenter)
-                    image_title.setStyleSheet("font-size:10px;font-weight:900;color:#2A5A7A;background:#050D18;border-bottom:1px solid #0E2A40;padding:8px 12px;font-family:Consolas;letter-spacing:3px;")
+                    image_title.setStyleSheet(
+                        "font-size:10px;font-weight:900;color:#2A5A7A;background:#050D18;border-bottom:1px solid #0E2A40;padding:8px 12px;font-family:Consolas;letter-spacing:3px;")
                     left_result_layout.addWidget(image_title)
 
                     image_frame = QFrame()
                     image_frame.setMinimumSize(600, 500)
-                    image_frame.setStyleSheet("QFrame { border: 1px solid #1A3A5C; border-left: 3px solid #00AAFF; border-radius: 0px; background-color: #030810; }")
+                    image_frame.setStyleSheet(
+                        "QFrame { border: 1px solid #1A3A5C; border-left: 3px solid #00AAFF; border-radius: 0px; background-color: #030810; }")
                     image_frame_layout = QVBoxLayout(image_frame)
                     image_frame_layout.setContentsMargins(8, 8, 8, 8)
 
@@ -2089,7 +2172,8 @@ class PipelineRunner:
                     saved_image_label.setStyleSheet("background-color: #030810; border: none;")
                     pixmap = QPixmap(image_to_show)
                     if not pixmap.isNull():
-                        saved_image_label.setPixmap(pixmap.scaled(560, 460, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                        saved_image_label.setPixmap(
+                            pixmap.scaled(560, 460, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                     else:
                         saved_image_label.setText("❌ Cannot load image")
                     image_frame_layout.addWidget(saved_image_label, 1)
@@ -2102,12 +2186,14 @@ class PipelineRunner:
 
                     video_title = QLabel("UPLOADED VIDEO")
                     video_title.setAlignment(Qt.AlignCenter)
-                    video_title.setStyleSheet("font-size:10px;font-weight:900;color:#2A5A7A;background:#050D18;border-bottom:1px solid #0E2A40;padding:8px 12px;font-family:Consolas;letter-spacing:3px;")
+                    video_title.setStyleSheet(
+                        "font-size:10px;font-weight:900;color:#2A5A7A;background:#050D18;border-bottom:1px solid #0E2A40;padding:8px 12px;font-family:Consolas;letter-spacing:3px;")
                     right_result_layout.addWidget(video_title)
 
                     video_frame = QFrame()
                     video_frame.setMinimumSize(760, 560)
-                    video_frame.setStyleSheet("QFrame { border: 1px solid #1A3A5C; border-left: 3px solid #00FF88; border-radius: 0px; background-color: #030810; }")
+                    video_frame.setStyleSheet(
+                        "QFrame { border: 1px solid #1A3A5C; border-left: 3px solid #00FF88; border-radius: 0px; background-color: #030810; }")
                     video_frame_layout = QVBoxLayout(video_frame)
                     video_frame_layout.setContentsMargins(8, 8, 8, 8)
 
@@ -2116,7 +2202,8 @@ class PipelineRunner:
                     video_widget.setStyleSheet("background-color: #030810;")
                     video_info = QLabel(os.path.basename(uploaded_video_path))
                     video_info.setAlignment(Qt.AlignCenter)
-                    video_info.setStyleSheet("font-size: 13px; color: #7AAAD4; padding: 6px 10px; background-color: #050D18; border-radius: 0px; font-family: Consolas;")
+                    video_info.setStyleSheet(
+                        "font-size: 13px; color: #7AAAD4; padding: 6px 10px; background-color: #050D18; border-radius: 0px; font-family: Consolas;")
                     video_frame_layout.addWidget(video_widget, 1)
                     video_frame_layout.addWidget(video_info, 0)
                     right_result_layout.addWidget(video_frame, 1)
@@ -2132,10 +2219,13 @@ class PipelineRunner:
                     player.setVideoOutput(video_widget)
                     player.setSource(QUrl.fromLocalFile(uploaded_video_path))
                     audio.setVolume(0.0)
+
                     def loop_uploaded_video(status):
                         from PySide6.QtMultimedia import QMediaPlayer
                         if status == QMediaPlayer.EndOfMedia:
-                            player.setPosition(0); player.play()
+                            player.setPosition(0);
+                            player.play()
+
                     player.mediaStatusChanged.connect(loop_uploaded_video)
                     player.play()
                     saved_image_dialog.finished.connect(lambda _: player.stop())
@@ -2143,17 +2233,20 @@ class PipelineRunner:
                     saved_image_label = QLabel()
                     saved_image_label.setAlignment(Qt.AlignCenter)
                     saved_image_label.setMinimumHeight(400)
-                    saved_image_label.setStyleSheet("border: 1px solid #1A3A5C; border-left: 3px solid #00AAFF; border-radius: 0px; background-color: #030810; padding: 10px;")
+                    saved_image_label.setStyleSheet(
+                        "border: 1px solid #1A3A5C; border-left: 3px solid #00AAFF; border-radius: 0px; background-color: #030810; padding: 10px;")
                     pixmap = QPixmap(image_to_show)
                     if not pixmap.isNull():
-                        saved_image_label.setPixmap(pixmap.scaled(700, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                        saved_image_label.setPixmap(
+                            pixmap.scaled(700, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                     else:
                         saved_image_label.setText("❌ Cannot load image")
                     saved_layout.addWidget(saved_image_label)
 
                 if coordinates_sent:
                     coord_display = QLabel(f"COORDINATES SENT:\n{coord_string}")
-                    coord_display.setStyleSheet("font-size: 13px; color: #00AAFF; padding: 10px 14px; background-color: #050D18; border: 1px solid #1A3A5C; border-left: 3px solid #00AAFF; border-radius: 0px; margin: 5px; font-family: Consolas;")
+                    coord_display.setStyleSheet(
+                        "font-size: 13px; color: #00AAFF; padding: 10px 14px; background-color: #050D18; border: 1px solid #1A3A5C; border-left: 3px solid #00AAFF; border-radius: 0px; margin: 5px; font-family: Consolas;")
                     coord_display.setWordWrap(True)
                     saved_layout.addWidget(coord_display)
 
@@ -2174,7 +2267,8 @@ class PipelineRunner:
                 saved_layout.addWidget(close_btn, alignment=Qt.AlignCenter)
                 saved_image_dialog.exec()
             else:
-                QMessageBox.warning(parent_widget, "⚠️ Image Not Found", f"No image found in Step {step_num}.\nCapture folder: {capture_folder}")
+                QMessageBox.warning(parent_widget, "⚠️ Image Not Found",
+                                    f"No image found in Step {step_num}.\nCapture folder: {capture_folder}")
 
         retry_btn.clicked.connect(on_retry_detection)
         verify_btn.clicked.connect(on_verify)

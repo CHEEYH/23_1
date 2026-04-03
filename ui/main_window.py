@@ -6,11 +6,17 @@ import socket
 from socket import SHUT_RDWR
 
 from .components import AssemblyDialog
-from .components.heartbeat_manager import HeartbeatManager  # Add this import
+from .components.heartbeat_manager import HeartbeatManager
 from .pages import (
     MainPage, TechnicianLoginPage, TechnicianPage,
     RecipeMenuPage, CreateRecipePage, EditFlowPage, DeepLearningPage
 )
+
+# ========== ADD THIS IMPORT ==========
+from camera.orbbec_camera_thread import OrbbecCameraThread
+
+
+# =====================================
 
 
 class MainWindow(QMainWindow):
@@ -48,8 +54,61 @@ class MainWindow(QMainWindow):
         for page in pages:
             self.stack.addWidget(page)
 
+        # ========== ADD ORBBEC THREAD SETUP ==========
+        self.orbbec_thread = None
+        self._setup_orbbec_thread()
+        # ============================================
+
         # 显示主页面
         self.stack.setCurrentWidget(self.main_page)
+
+    # ========== ADD THIS NEW METHOD ==========
+    def _setup_orbbec_thread(self):
+        """Setup and start Orbbec camera thread for hand gesture detection"""
+        print("\n" + "=" * 60)
+        print("🔧 Setting up Orbbec Camera Thread")
+        print("=" * 60)
+
+        try:
+            # Create Orbbec thread
+            self.orbbec_thread = OrbbecCameraThread()
+
+            # Connect to main page for pipeline trigger
+            if hasattr(self, 'main_page') and self.main_page:
+                self.main_page.connect_orbbec_trigger(self.orbbec_thread)
+                print("✅ Connected Orbbec thread to MainPage")
+            else:
+                print("⚠️ MainPage not ready yet")
+
+            # Connect status signals for debugging
+            self.orbbec_thread.status_signal.connect(self._on_orbbec_status)
+            self.orbbec_thread.error_signal.connect(self._on_orbbec_error)
+            self.orbbec_thread.frame_signal.connect(self._on_orbbec_frame)
+
+            # Start the thread
+            self.orbbec_thread.start()
+            print("✅ Orbbec thread started successfully")
+
+        except Exception as e:
+            print(f"❌ Failed to setup Orbbec thread: {e}")
+            import traceback
+            traceback.print_exc()
+            self.orbbec_thread = None
+
+    def _on_orbbec_status(self, message):
+        """Handle Orbbec status messages"""
+        print(f"[Orbbec] {message}")
+
+    def _on_orbbec_error(self, error):
+        """Handle Orbbec error messages"""
+        print(f"[Orbbec ERROR] {error}")
+
+    def _on_orbbec_frame(self, frame):
+        """Handle Orbbec frame (optional - for debugging)"""
+        # You can add frame display logic here if needed
+        pass
+
+    # =========================================
 
     def go_to(self, w):
         """跳转到指定页面"""
@@ -59,7 +118,6 @@ class MainWindow(QMainWindow):
         # If going to deep learning page, refresh its recipe info
         if w == self.deep_learning_page:
             print("Target is deep learning page - scheduling refresh")
-            # Use QTimer to ensure it runs after the page is shown
             from PySide6.QtCore import QTimer
             QTimer.singleShot(100, self.deep_learning_page.refresh_recipe_info)
 
@@ -165,3 +223,19 @@ class MainWindow(QMainWindow):
                 previous_page._update_tcp_status_from_heartbeat()
         else:
             self.stack.setCurrentWidget(self.main_page)
+
+    # ========== ADD CLEANUP ON CLOSE ==========
+    def closeEvent(self, event):
+        """Clean up Orbbec thread when window closes"""
+        print("\n🔧 Closing MainWindow - cleaning up Orbbec thread...")
+
+        if self.orbbec_thread is not None:
+            try:
+                self.orbbec_thread.stop()
+                self.orbbec_thread.wait(2000)
+                print("✅ Orbbec thread stopped")
+            except Exception as e:
+                print(f"⚠️ Error stopping Orbbec thread: {e}")
+
+        super().closeEvent(event)
+    # =========================================
