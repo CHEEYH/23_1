@@ -1123,13 +1123,13 @@ class MainPage(QWidget):
             return
 
         self.qr_result_ok = True
-        self.qr_dialog.status_label.setText("✓ QR SCANNED! Use hand gesture to confirm")
+        self.qr_dialog.status_label.setText("✓ QR SCANNED!")
         self.qr_dialog.status_label.setStyleSheet(
             "color: #00FF88; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
         self.qr_dialog.result_box.append(clean)
 
         self.qr_dialog.confirm_btn.setEnabled(True)
-        self.qr_dialog.confirm_btn.setText("✓ READY FOR HAND CONFIRM")
+        self.qr_dialog.confirm_btn.setText("✓ CONFIRM")
 
     def mark_qr_ready_for_hand(self):
         """QR is scanned, ready for hand confirmation"""
@@ -1729,15 +1729,8 @@ class MainPage(QWidget):
         import json
         import numpy as np
 
-        if not self.current_recipe:
-            print("[PRECHECK] No current recipe, cannot load homography")
-            return None
-
-        homography_path = os.path.join(
-            "recipes",
-            self.current_recipe,
-            "orbbec_homography.json"
-        )
+        # Fixed path - not recipe-based
+        homography_path = r"C:\Users\PC_AI_DS\Desktop\Xlent\23_1\orbbec_homography.json"
 
         if not os.path.exists(homography_path):
             print(f"[PRECHECK] Homography file not found: {homography_path}")
@@ -1807,10 +1800,19 @@ class MainPage(QWidget):
     def _post_run(self, success):
         if success:
             self.machine_status.setText(f"READY  ·  {self.current_recipe}")
-            self.has_active_mes_job = False;
+            self.has_active_mes_job = False
             self.qr_check_passed = False
-            self.qr_result_ok = False;
+            self.qr_result_ok = False
             self.last_qr_job_id = None
+
+            # ========== 重置 Orbbec trigger 状态 ==========
+            if self.orbbec_thread:
+                self.orbbec_thread.set_trigger_state("idle")
+                self.orbbec_thread.trigger_was_used = False
+                self.orbbec_thread.trigger_enter_time = None
+                print("[MainPage] Orbbec trigger reset to idle")
+            # ============================================
+
             self.try_fetch_mes_recipe()
         else:
             self.machine_status.setText("PAUSED")

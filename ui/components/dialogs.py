@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QGridLayout, QScrollArea, QWidget, QDialogButtonBox, QMessageBox, QFrame, QTextEdit,
     QFileDialog, QProgressDialog, QSplitter
 )
-from PySide6.QtCore import Signal, Qt, QTimer, QThread
+from PySide6.QtCore import Signal, Qt, QTimer, QThread, QEventLoop
 from config_manager import config_manager
 from ui.components.prediction_manager import PredictionManager
 from ui.components.heartbeat_manager import HeartbeatManager
@@ -810,18 +810,47 @@ class AssemblyDialog(QDialog):
 
     def ensure_video_folder(self):
         """Ensure the uploaded video folder exists for this block"""
-        recipe_path = self.get_current_recipe_path()
-        if not recipe_path:
-            return None
+        try:
+            recipe_path = self.get_current_recipe_path()
+            if not recipe_path:
+                print("Warning: No recipe path found")
+                return None
 
-        self.video_folder = os.path.join(
-            recipe_path,
-            "Assembly",
-            f"Block_{self.block_id}",
-            "uploaded_videos"
-        )
-        os.makedirs(self.video_folder, exist_ok=True)
-        return self.video_folder
+            # Ensure recipe_path exists
+            if not os.path.exists(recipe_path):
+                print(f"Warning: Recipe path does not exist: {recipe_path}")
+                return None
+
+            # Build path safely
+            self.video_folder = os.path.join(
+                recipe_path,
+                "Assembly",
+                f"Block_{self.block_id}",
+                "uploaded_videos"
+            )
+
+            # Create directories with explicit error handling
+            try:
+                os.makedirs(self.video_folder, exist_ok=True)
+            except PermissionError:
+                print(f"Permission denied creating folder: {self.video_folder}")
+                return None
+            except OSError as e:
+                print(f"OS error creating folder: {e}")
+                return None
+
+            # Verify folder was created and is writable
+            if os.path.exists(self.video_folder) and os.access(self.video_folder, os.W_OK):
+                return self.video_folder
+            else:
+                print(f"Folder not writable: {self.video_folder}")
+                return None
+
+        except Exception as e:
+            print(f"Error in ensure_video_folder: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def upload_video(self):
         """Upload a video file into recipe/block-specific folder"""
@@ -847,36 +876,50 @@ class AssemblyDialog(QDialog):
                 QMessageBox.warning(self, "⚠️ File Not Found", "Selected video file does not exist.")
                 return
 
-            original_name = os.path.basename(file_path)
-            ext = os.path.splitext(original_name)[1]
-
-            # Build target filename based on recipe + block_id + timestamp
+            # SAFELY get recipe name with fallbacks
             recipe_name = "unknown_recipe"
             try:
                 if hasattr(config_manager, 'current_recipe_name') and config_manager.current_recipe_name:
                     recipe_name = str(config_manager.current_recipe_name)
                 elif hasattr(config_manager, 'current_recipe') and config_manager.current_recipe:
                     recipe_name = str(config_manager.current_recipe)
-            except:
-                pass
+            except Exception as e:
+                print(f"Warning: Could not get recipe name: {e}")
+                recipe_name = "unknown_recipe"
 
-            safe_recipe_name = re.sub(r'[^\w\-\.]', '_', str(recipe_name))
+            # SAFELY sanitize filename (remove problematic characters)
+            safe_recipe_name = re.sub(r'[^\w\-\.]', '_', recipe_name)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # Get file extension safely
+            original_name = os.path.basename(file_path)
+            ext = os.path.splitext(original_name)[1]
+            if not ext:
+                ext = '.mp4'  # default extension if none found
 
             target_filename = f"{safe_recipe_name}_Block_{self.block_id}_{timestamp}{ext}"
             target_path = os.path.join(video_folder, target_filename)
 
-            shutil.copy2(file_path, target_path)
+            # Copy file with error handling
+            try:
+                shutil.copy2(file_path, target_path)
+            except Exception as e:
+                QMessageBox.critical(self, "❌ Copy Failed", f"Failed to copy video file:\n\n{str(e)}")
+                return
+
             self.uploaded_video_path = target_path
 
-            # Relative path for message
+            # SAFELY get relative path
             recipe_path = self.get_current_recipe_path()
             rel_path = target_path
-            if recipe_path:
+            if recipe_path and os.path.exists(recipe_path):
                 try:
                     rel_path = os.path.relpath(target_path, recipe_path)
-                except:
-                    pass
+                except ValueError:
+                    # Different drives on Windows
+                    rel_path = target_path
+                except Exception:
+                    rel_path = target_path
 
             QMessageBox.information(
                 self,
@@ -888,6 +931,8 @@ class AssemblyDialog(QDialog):
             print(f"✅ Uploaded video saved to: {target_path}")
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "❌ Upload Failed", f"Failed to upload video:\n\n{str(e)}")
 
     # ===== ASSEMBLY TOOL METHODS =====
@@ -4194,17 +4239,22 @@ class AssemblyDialog(QDialog):
         """Get the path of current recipe folder"""
         try:
             if hasattr(config_manager, 'get_current_recipe_folder'):
-                return config_manager.get_current_recipe_folder()
-        except:
-            pass
+                path = config_manager.get_current_recipe_folder()
+                if path and isinstance(path, str) and os.path.exists(path):
+                    return path
+        except Exception as e:
+            print(f"Warning: Could not get recipe folder via config_manager: {e}")
 
         # Try default path
         try:
             if hasattr(config_manager, 'current_recipe'):
                 recipe_id = config_manager.current_recipe
-                return os.path.join("recipes", str(recipe_id))
-        except:
-            pass
+                if recipe_id:
+                    default_path = os.path.join("recipes", str(recipe_id))
+                    if os.path.exists(default_path):
+                        return default_path
+        except Exception as e:
+            print(f"Warning: Could not get recipe via current_recipe: {e}")
 
         return None
 
@@ -5272,6 +5322,15 @@ class ScrewDialog(QDialog):
         self.config_data = None
         self.uploaded_video_path = None
 
+        self.setWindowFlags(
+            Qt.Window |
+            Qt.CustomizeWindowHint |
+            Qt.WindowTitleHint |
+            Qt.WindowMinMaxButtonsHint |
+            Qt.WindowCloseButtonHint
+        )
+        self.setWindowModality(Qt.ApplicationModal)  # Use ApplicationModal instead of WindowModal
+
         self.setWindowTitle("Screw Configuration")
         self.setFixedSize(1400, 800)
 
@@ -5486,94 +5545,83 @@ class ScrewDialog(QDialog):
             QMessageBox.critical(self, "❌ Upload Failed", f"Failed to upload video:\n\n{str(e)}")
 
     def open_assembly_tool(self):
-        """Open Screw Location Tool"""
+        """Open Screw Location Tool as a modal dialog"""
         try:
             from ui.components.assembly_laser import MainWindow as AssemblyLaserMainWindow
 
-            print(f"DEBUG open_assembly_tool -> block_id={self.block_id}, block_name={self.block_name}, mode=screw")
-
-            if self.assembly_tool_window:
-                try:
-                    self.assembly_tool_window.close()
-                except:
-                    pass
-                self.assembly_tool_window = None
-
-            self.assembly_tool_window = AssemblyLaserMainWindow(
+            # Create the tool window
+            tool_window = AssemblyLaserMainWindow(
                 block_id=str(self.block_id),
                 block_name=str(self.block_name),
                 mode="screw"
             )
 
-            self.assembly_tool_window.setParent(None)
-            self.assembly_tool_window.setWindowFlags(
-                Qt.Window |
-                Qt.WindowStaysOnTopHint |
-                Qt.CustomizeWindowHint |
-                Qt.WindowTitleHint |
-                Qt.WindowMinMaxButtonsHint |
-                Qt.WindowCloseButtonHint
-            )
-            self.assembly_tool_window.setWindowModality(Qt.NonModal)
-            self.assembly_tool_window.setAttribute(Qt.WA_DeleteOnClose)
+            # Make it modal to the screw dialog
+            tool_window.setWindowModality(Qt.WindowModal)
+            tool_window.setAttribute(Qt.WA_DeleteOnClose)
 
-            self.assembly_tool_window.destroyed.connect(self._on_assembly_tool_closed)
+            # Show and wait for it to close
+            tool_window.show()
 
-            self.assembly_tool_window.show()
-            self.assembly_tool_window.raise_()
-            self.assembly_tool_window.activateWindow()
+            # This will block until the tool window is closed
+            # But we need to process events properly
+            self.setEnabled(False)  # Disable screw dialog
 
-            self.hide()
+            # Create an event loop to wait for the tool window to close
+            loop = QEventLoop()
+            tool_window.destroyed.connect(loop.quit)
+            loop.exec()
+
+            # Re-enable screw dialog
+            self.setEnabled(True)
+            self.raise_()
+            self.activateWindow()
 
         except Exception as e:
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Failed to open Screw Location Tool:\n\n{str(e)}")
+            self.setEnabled(True)  # Re-enable on error
 
     def open_assembly_tool_2(self):
-        """Open Screw Location Tool 2 with separate folders"""
+        """Open Screw Location Tool 2 with separate folders as a modal dialog"""
         try:
             from ui.components.assembly_laser import MainWindow as AssemblyLaserMainWindow
 
             print(f"DEBUG open_assembly_tool_2 -> block_id={self.block_id}, block_name={self.block_name}, mode=screw2")
 
-            if self.assembly_tool_window:
-                try:
-                    self.assembly_tool_window.close()
-                except:
-                    pass
-                self.assembly_tool_window = None
-
-            self.assembly_tool_window = AssemblyLaserMainWindow(
+            # Create the tool window
+            tool_window = AssemblyLaserMainWindow(
                 block_id=str(self.block_id),
                 block_name=str(self.block_name),
                 mode="screw2"
             )
 
-            self.assembly_tool_window.setParent(None)
-            self.assembly_tool_window.setWindowFlags(
-                Qt.Window |
-                Qt.WindowStaysOnTopHint |
-                Qt.CustomizeWindowHint |
-                Qt.WindowTitleHint |
-                Qt.WindowMinMaxButtonsHint |
-                Qt.WindowCloseButtonHint
-            )
-            self.assembly_tool_window.setWindowModality(Qt.NonModal)
-            self.assembly_tool_window.setAttribute(Qt.WA_DeleteOnClose)
+            # Make it modal to the screw dialog
+            tool_window.setWindowModality(Qt.WindowModal)
+            tool_window.setAttribute(Qt.WA_DeleteOnClose)
 
-            self.assembly_tool_window.destroyed.connect(self._on_assembly_tool_closed)
+            # Disable screw dialog while tool is open
+            self.setEnabled(False)
 
-            self.assembly_tool_window.show()
-            self.assembly_tool_window.raise_()
-            self.assembly_tool_window.activateWindow()
+            # Show the tool window
+            tool_window.show()
 
-            self.hide()
+            # Create an event loop to wait for the tool window to close
+            loop = QEventLoop()
+            tool_window.destroyed.connect(loop.quit)
+            loop.exec()
+
+            # Re-enable screw dialog
+            self.setEnabled(True)
+            self.raise_()
+            self.activateWindow()
 
         except Exception as e:
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Failed to open Screw Location Tool 2:\n\n{str(e)}")
+            self.setEnabled(True)  # Re-enable on error
 
     def _on_assembly_tool_closed(self):
         """Show ScrewDialog again after tool window is closed"""

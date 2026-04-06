@@ -208,9 +208,7 @@ class Calibration(QDialog):
         QTimer.singleShot(1200, self.capture_orbbec_frame)
 
     def _default_calibration_path(self) -> str:
-        if self.recipe_name:
-            return os.path.join("recipes", self.recipe_name, "orbbec_homography.json")
-        return "orbbec_homography.json"
+        return r"C:\Users\PC_AI_DS\Desktop\Xlent\23_1\orbbec_homography.json"
 
     def _build_ui(self):
         root = QVBoxLayout(self)

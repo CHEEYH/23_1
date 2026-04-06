@@ -81,8 +81,6 @@ def _ss_screw_cell():
     return ("background-color:#050D18;padding:10px 14px;"
             "border:1px solid #0E2A40;")
 
-
-
 class PipelineRunner:
     _api_client = None
     _heartbeat_manager = None
@@ -1783,7 +1781,7 @@ class PipelineRunner:
                 orbbec_thread.error_signal.connect(lambda msg: detection_status.setText(f"❌ {msg}"))
 
                 # Connect pipeline trigger signal (NEW)
-                orbbec_thread.pipeline_trigger_signal.connect(on_pipeline_trigger_from_orbbec)
+                orbbec_thread.start_pipeline_signal.connect(on_pipeline_trigger_from_orbbec)
 
                 orbbec_thread.start()
 
@@ -1886,10 +1884,11 @@ class PipelineRunner:
 
                 frame = cv2.imread(new_capture_path)
                 model = YOLO(model_path)
-                results = model(frame, conf=0.25, classes=[class_id] if class_id is not None else None)
+                results = model(frame, conf=0.25)  # ← REMOVED classes filter!
                 detections = results[0]
 
-                predictions_for_sending = []
+                # Get ALL predictions
+                all_predictions = []
                 if len(detections.boxes) > 0:
                     boxes = detections.boxes
                     for i in range(len(boxes)):
@@ -1897,29 +1896,72 @@ class PipelineRunner:
                         class_id_val = int(boxes.cls[i].cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls[i])
                         conf_val = float(boxes.conf[i].cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf[i])
                         class_name = detections.names.get(class_id_val, f"class_{class_id_val}")
-                        predictions_for_sending.append({
+                        all_predictions.append({
                             'bbox': xyxy.tolist() if hasattr(xyxy, 'tolist') else xyxy,
                             'class_id': class_id_val,
                             'class_name': class_name,
                             'confidence': conf_val
                         })
 
-                if predictions_for_sending and orbbec_thread is not None:
-                    try:
-                        best_prediction = max(predictions_for_sending, key=lambda p: p.get('confidence', 0))
-                        best_bbox = best_prediction.get('bbox', None)
-                        print(f"[pipeline_runner] best_bbox before sending to Orbbec: {best_bbox}")
+                print(f"\n🎯 TARGET PRODUCT NAME: '{product_name}'")
+                print(f"📦 Detected classes: {[p['class_name'] for p in all_predictions]}")
+                print(f"🔍 Lowercase target: '{product_name.lower()}'")
+                print(f"🔍 Lowercase detected: {[p['class_name'].lower() for p in all_predictions]}")
+
+                # ========== NEW: Separate target vs other objects ==========
+                target_predictions = []
+                other_predictions = []
+
+                # Function to clean class names (remove prefixes like "1_", "2_", etc.)
+                def clean_name(name: str) -> str:
+                    """Remove numeric prefixes like '1_', '2_', 'C1.1_' from class names"""
+                    import re
+                    # Remove numbers and underscore at start (e.g., "2_PCB" -> "PCB")
+                    name = re.sub(r'^\d+_', '', name)
+                    # Remove recipe prefix (e.g., "C1.1_PCB" -> "PCB")
+                    name = re.sub(r'^[A-Z0-9\.]+_', '', name)
+                    return name.lower().strip()
+
+                for pred in all_predictions:
+                    pred_clean = clean_name(pred['class_name'])
+                    target_clean = clean_name(product_name)
+
+                    print(
+                        f"🔍 Comparing: '{pred['class_name']}' (clean: '{pred_clean}') vs '{product_name}' (clean: '{target_clean}')")
+
+                    if pred_clean == target_clean:
+                        target_predictions.append(pred)
+                        print(f"   ✅ MATCH! -> target")
+                    else:
+                        other_predictions.append(pred)
+                        print(f"   ❌ OTHER")
+
+                # Find best target detection (highest confidence)
+                best_target = None
+                if target_predictions:
+                    best_target = max(target_predictions, key=lambda p: p.get('confidence', 0))
+
+                # ========== NEW: Send ALL coordinates to Orbbec ==========
+                if orbbec_thread is not None:
+                    # Clear existing boxes
+                    orbbec_thread.clear_external_target_bbox()
+                    orbbec_thread.clear_all_detection_boxes()  # ← New method
+
+                    # Send target box (for alarm)
+                    if best_target:
+                        best_bbox = best_target.get('bbox', None)
                         if best_bbox:
                             orbbec_thread.set_external_target_bbox(best_bbox)
-                    except Exception as e:
-                        print(f"❌ Failed to update Orbbec target bbox: {e}")
-                elif orbbec_thread is not None:
-                    try:
-                        orbbec_thread.clear_external_target_bbox()
-                    except Exception as e:
-                        print(f"❌ Failed to clear Orbbec target bbox: {e}")
+                            print(f"[TARGET] {product_name} at {best_bbox}")
 
-                target_found = has_target_class(detections, class_id)
+                    # Send ALL other detected objects (for wrong location warning)
+                    if other_predictions:
+                        orbbec_thread.set_all_detection_boxes(other_predictions)
+                        for obj in other_predictions:
+                            print(f"[OTHER] {obj['class_name']} at {obj['bbox']}")
+
+                # Check if target was found
+                target_found = best_target is not None
                 target_detected_successfully = target_found
 
                 if not target_found and orbbec_thread is not None:

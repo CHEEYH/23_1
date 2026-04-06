@@ -89,7 +89,10 @@ class OrbbecCameraThread(QThread):
         self.use_external_target = True
 
         self.target_enter_time = None
-        self.alarm_delay_sec = 1.0
+        self.alarm_delay_sec = 0.5
+
+        self.wrong_location_enter_time = None
+        self.wrong_location_delay_sec = 1
 
         # ========== SINGLE TRIGGER BOX WITH STATE ==========
         self.trigger_box = None
@@ -116,6 +119,11 @@ class OrbbecCameraThread(QThread):
         self.use_trigger_boxes = True
         # ===================================================
 
+        # ========== NEW: Store all detection boxes ==========
+        self.all_detection_boxes = []  # List of (bbox, class_name, confidence)
+        self.all_boxes_lock = threading.Lock()
+        # ===================================================
+
         self.resolution_printed = False
 
         self.latest_frame = None
@@ -128,7 +136,6 @@ class OrbbecCameraThread(QThread):
         self.beep_frequency = 2500
         self.beep_duration_ms = 300
 
-        self.current_recipe_name = "C1.1"
         self.orbbec_homography = None
 
     def stop(self):
@@ -139,7 +146,9 @@ class OrbbecCameraThread(QThread):
 
     def load_orbbec_homography(self):
         try:
-            homography_path = os.path.join("recipes", self.current_recipe_name, "orbbec_homography.json")
+            homography_path = r"C:\Users\PC_AI_DS\Desktop\Xlent\23_1\orbbec_homography.json"
+
+            os.makedirs(os.path.dirname(homography_path), exist_ok=True)
 
             if not os.path.exists(homography_path):
                 self.status_signal.emit(f"Homography file not found: {homography_path}")
@@ -159,10 +168,15 @@ class OrbbecCameraThread(QThread):
 
             return H
 
+
         except Exception as e:
+
             self.status_signal.emit(f"Failed to load homography: {e}")
+
             print(f"❌ Failed to load homography: {e}")
+
             self.orbbec_homography = None
+
             return None
 
     def map_bbox_with_homography(self, bbox, H):
@@ -189,7 +203,6 @@ class OrbbecCameraThread(QThread):
 
     def set_recipe_name(self, recipe_name):
         self.current_recipe_name = recipe_name
-        self.load_orbbec_homography()
 
     def init_trigger_box(self, frame_shape):
         """Initialize trigger box at fixed position"""
@@ -283,7 +296,9 @@ class OrbbecCameraThread(QThread):
 
         # Show countdown if hand is inside and not yet triggered
         if show_countdown:
-            elapsed = current_time_since_enter = time.perf_counter() - self.trigger_enter_time
+            # ========== 修复这一行 ==========
+            elapsed = time.perf_counter() - self.trigger_enter_time
+            # ================================
             if elapsed < self.trigger_delay_sec:
                 remain = self.trigger_delay_sec - elapsed
 
@@ -706,6 +721,7 @@ class OrbbecCameraThread(QThread):
 
         h, w = frame.shape[:2]
 
+        # ========== TARGET BOX (from AI detection) ==========
         with self.target_lock:
             external_bbox = self.external_target_bbox
 
@@ -746,6 +762,7 @@ class OrbbecCameraThread(QThread):
                 self.target_enter_time = None
                 self.warning_active = False
 
+        # Draw target box
         tx1, ty1, tx2, ty2 = self.target_box
         cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), (0, 255, 255), 2)
         cv2.putText(
@@ -758,6 +775,7 @@ class OrbbecCameraThread(QThread):
             2
         )
 
+        # ========== HAND DETECTION ==========
         hit_target = False
         detections = []
 
@@ -790,8 +808,10 @@ class OrbbecCameraThread(QThread):
 
         assigned_detections = self.match_hands_to_tracks(detections)
 
-        # Track if hand is inside trigger box
+        # Track hand positions
         hand_in_trigger = False
+        hand_in_wrong_location = False
+        wrong_location_name = None
 
         for det in assigned_detections:
             hand = det["hand_landmarks"]
@@ -808,11 +828,13 @@ class OrbbecCameraThread(QThread):
 
             color = (0, 255, 0) if stable_label.lower() == "left" else (255, 0, 0)
 
+            # Draw hand landmarks
             for lm in smoothed:
                 x = int(lm[0] * frame.shape[1])
                 y = int(lm[1] * frame.shape[0])
                 cv2.circle(frame, (x, y), 4, color, -1)
 
+            # Draw hand connections
             for c1, c2 in HAND_CONNECTIONS:
                 x1l = int(smoothed[c1][0] * frame.shape[1])
                 y1l = int(smoothed[c1][1] * frame.shape[0])
@@ -820,6 +842,7 @@ class OrbbecCameraThread(QThread):
                 y2l = int(smoothed[c2][1] * frame.shape[0])
                 cv2.line(frame, (x1l, y1l), (x2l, y2l), color, 2)
 
+            # Draw hand bounding box
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.circle(frame, (palm_x, palm_y), 6, color, -1)
             cv2.putText(
@@ -840,13 +863,34 @@ class OrbbecCameraThread(QThread):
                     hit_target = True
                     break
 
-            # ========== Check if hand is inside trigger box ==========
+            # Check if hand is inside trigger box
             if self.use_trigger_boxes:
                 if self.check_hand_in_trigger_box(smoothed, frame.shape):
                     hand_in_trigger = True
-            # ========================================================
 
-        # Handle target box alarm logic (existing)
+            # ========== WRONG LOCATION DETECTION ==========
+            if hasattr(self, 'all_detection_boxes') and self.all_detection_boxes:
+                for box_info in self.all_detection_boxes:
+                    bx1, by1, bx2, by2 = box_info['bbox']
+                    class_name = box_info['class_name']
+
+                    for lm in smoothed:
+                        lx = int(lm[0] * frame.shape[1])
+                        ly = int(lm[1] * frame.shape[0])
+                        if bx1 <= lx <= bx2 and by1 <= ly <= by2:
+                            # Check if this is the target box
+                            if self.target_box:
+                                if not (abs(bx1 - tx1) < 50 and abs(by1 - ty1) < 50):
+                                    hand_in_wrong_location = True
+                                    wrong_location_name = class_name
+                                    print(f"⚠ WRONG LOCATION DETECTED: Hand on {class_name}")
+                            else:
+                                hand_in_wrong_location = True
+                                wrong_location_name = class_name
+                            break
+            # =============================================
+
+        # ========== TARGET BOX ALARM LOGIC ==========
         current_time = time.perf_counter()
 
         if hit_target:
@@ -894,7 +938,77 @@ class OrbbecCameraThread(QThread):
             self.target_enter_time = None
             self.warning_active = False
 
-        # ========== NEW: Handle trigger box logic (single box with state) ==========
+        # ========== WRONG LOCATION FEEDBACK (WITH DELAY) ==========
+        if hand_in_wrong_location and not hit_target:
+            # Start timer when hand first enters wrong location
+            if self.wrong_location_enter_time is None:
+                self.wrong_location_enter_time = current_time
+                self.status_signal.emit(f"Hand on wrong location: {wrong_location_name}")
+                print(f"[WRONG LOCATION] Timer started for: {wrong_location_name}")
+
+            elapsed_in_wrong = current_time - self.wrong_location_enter_time
+
+            # Show countdown for wrong location (if delay > 0)
+            if self.wrong_location_delay_sec > 0:
+                remain = max(0.0, self.wrong_location_delay_sec - elapsed_in_wrong)
+                cv2.putText(
+                    frame,
+                    f"Wrong location in: {remain:.1f}s",
+                    (10, h - 80),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 165, 255),
+                    2
+                )
+
+            # Trigger warning after delay
+            if elapsed_in_wrong >= self.wrong_location_delay_sec:
+                self.play_wrong_location_sound()
+                cv2.putText(
+                    frame,
+                    f"⚠ WRONG LOCATION! Hand on {wrong_location_name}",
+                    (10, h - 110),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 255),
+                    2
+                )
+                self.status_signal.emit(f"❌ Wrong location! Hand on {wrong_location_name}")
+        else:
+            # Reset timer when hand leaves wrong location
+            if self.wrong_location_enter_time is not None:
+                print(f"[WRONG LOCATION] Timer reset - hand left wrong location")
+                self.wrong_location_enter_time = None
+        # ==========================================================
+
+        # ========== DRAW ALL DETECTION BOXES (for wrong location visual) ==========
+        if hasattr(self, 'all_detection_boxes') and self.all_detection_boxes:
+            with self.all_boxes_lock:
+                for box_info in self.all_detection_boxes:
+                    x1, y1, x2, y2 = box_info['bbox']
+                    class_name = box_info['class_name']
+                    confidence = box_info['confidence']
+
+                    # Different colors for different objects
+                    if 'cover' in class_name.lower():
+                        color = (255, 100, 100)  # Red
+                    elif 'base' in class_name.lower():
+                        color = (100, 255, 100)  # Green
+                    elif 'pcb' in class_name.lower():
+                        color = (100, 100, 255)  # Blue
+                    else:
+                        color = (200, 200, 200)  # Gray
+
+                    # Draw box
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+                    # Draw label
+                    label = f"{class_name}: {confidence:.2f}"
+                    cv2.putText(frame, label, (x1, max(y1 - 5, 20)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        # ========================================================================
+
+        # ========== TRIGGER BOX LOGIC ==========
         if self.use_trigger_boxes:
             # Initialize trigger box if needed
             if self.trigger_box is None:
@@ -905,9 +1019,22 @@ class OrbbecCameraThread(QThread):
 
             # Update trigger state machine
             self.update_trigger_logic(hand_in_trigger, current_time)
-        # ==========================================================================
+        # =======================================
 
         return frame
+
+    def play_wrong_location_sound(self):
+        """Play sound for wrong location (double beep, lower frequency)"""
+        try:
+            current_time = time.perf_counter()
+            if current_time - self.last_beep_time >= self.beep_interval_sec:
+                # Wrong location: lower frequency, double beep
+                winsound.Beep(1500, 200)
+                time.sleep(0.05)
+                winsound.Beep(1500, 200)
+                self.last_beep_time = current_time
+        except Exception as e:
+            self.status_signal.emit(f"Wrong location sound error: {e}")
 
     def run(self):
         try:
@@ -1013,3 +1140,112 @@ class OrbbecCameraThread(QThread):
                 pass
 
             self.status_signal.emit("Thread stopped")
+
+    def clear_all_detection_boxes(self):
+        """Clear all detection boxes"""
+        with self.all_boxes_lock:
+            self.all_detection_boxes = []
+
+    def set_all_detection_boxes(self, predictions):
+        """Set all detected objects for display"""
+        with self.all_boxes_lock:
+            self.all_detection_boxes = []
+            for pred in predictions:
+                bbox = pred.get('bbox', [])
+                class_name = pred.get('class_name', 'unknown')
+                confidence = pred.get('confidence', 0)
+
+                # Apply homography to each box
+                if self.orbbec_homography is not None:
+                    try:
+                        mapped_bbox = self.map_bbox_with_homography(bbox, self.orbbec_homography)
+                        x1, y1, x2, y2 = mapped_bbox
+                    except Exception as e:
+                        print(f"Homography failed for {class_name}: {e}")
+                        x1, y1, x2, y2 = bbox[:4]
+                else:
+                    x1, y1, x2, y2 = bbox[:4]
+
+                self.all_detection_boxes.append({
+                    'bbox': (int(x1), int(y1), int(x2), int(y2)),
+                    'class_name': class_name,
+                    'confidence': confidence,
+                    'is_target': False
+                })
+
+    def draw_all_detection_boxes(self, frame):
+        """Draw all detection boxes with different colors"""
+        with self.all_boxes_lock:
+            for box_info in self.all_detection_boxes:
+                x1, y1, x2, y2 = box_info['bbox']
+                class_name = box_info['class_name']
+                confidence = box_info['confidence']
+
+                # Different colors for different objects
+                # You can customize based on class_name
+                if 'screw' in class_name.lower():
+                    color = (255, 100, 100)  # Red
+                elif 'bracket' in class_name.lower():
+                    color = (100, 255, 100)  # Green
+                elif 'connector' in class_name.lower():
+                    color = (100, 100, 255)  # Blue
+                else:
+                    color = (200, 200, 200)  # Gray
+
+                # Draw box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+                # Draw label
+                label = f"{class_name}: {confidence:.2f}"
+                cv2.putText(frame, label, (x1, max(y1 - 5, 20)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        return frame
+
+    def check_hand_in_wrong_location(self, hand_landmarks_smoothed, frame_shape):
+        """Check if hand is in ANY detection box that is NOT the target"""
+        if not self.all_detection_boxes:
+            return None, None
+
+        h, w = frame_shape[:2]
+
+        for lm in hand_landmarks_smoothed:
+            lx = int(lm[0] * w)
+            ly = int(lm[1] * h)
+
+            for box_info in self.all_detection_boxes:
+                x1, y1, x2, y2 = box_info['bbox']
+                class_name = box_info['class_name']
+
+                if x1 <= lx <= x2 and y1 <= ly <= y2:
+                    # Check if this is the target box
+                    if self.target_box and self.is_same_box((x1, y1, x2, y2), self.target_box):
+                        return 'target', class_name
+                    else:
+                        return 'wrong', class_name
+
+        return None, None
+
+    def is_same_box(self, box1, box2, tolerance=20):
+        """Check if two boxes are roughly the same"""
+        x1a, y1a, x2a, y2a = box1
+        x1b, y1b, x2b, y2b = box2
+        return (abs(x1a - x1b) < tolerance and abs(y1a - y1b) < tolerance and
+                abs(x2a - x2b) < tolerance and abs(y2a - y2b) < tolerance)
+
+    def play_warning_sound(self, is_wrong_location):
+        """Play different sounds for wrong location"""
+        try:
+            current_time = time.perf_counter()
+            if current_time - self.last_beep_time >= self.beep_interval_sec:
+                if is_wrong_location:
+                    # Wrong location: lower frequency, shorter, two beeps
+                    winsound.Beep(1500, 200)
+                    time.sleep(0.1)
+                    winsound.Beep(1500, 200)
+                else:
+                    # Correct location: higher frequency, longer
+                    winsound.Beep(2500, 300)
+                self.last_beep_time = current_time
+        except Exception as e:
+            self.status_signal.emit(f"Warning sound error: {e}")
