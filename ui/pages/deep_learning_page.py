@@ -1,6 +1,5 @@
 import os
 import random
-import shutil
 import threading
 import socket
 import time
@@ -1202,7 +1201,7 @@ class DeepLearningPage(QWidget):
     # ---------- Training Functions ----------
 
     def train_model(self):
-        """Simplified training with automatic cleanup"""
+        """Simplified training with auto setup"""
         if self.is_training:
             self.show_notification("Training already in progress", "warning")
             return
@@ -1226,16 +1225,21 @@ class DeepLearningPage(QWidget):
         # Use recipe folder as labeling path
         labeling_path = recipe_folder1
 
-        # ========== AUTO CLEANUP: Delete all old training files ==========
-        self.auto_cleanup_training_files(folder_path)
-        # ========== END OF AUTO CLEANUP ==========
-
         # Check if auto split needed
         train_images_dir = os.path.join(folder_path, "images", "train")
         if not os.path.exists(train_images_dir):
-            # Auto-setup without asking
-            self.status_label.setText("Auto-setting up dataset...")
+            reply = QMessageBox.question(
+                self, "Auto Setup",
+                "Dataset needs organization. Auto-setup for YOLO training?",
+                QMessageBox.Yes | QMessageBox.No
+            )
 
+            if reply != QMessageBox.Yes:
+                return
+
+            self.status_label.setText("Setting up dataset...")
+
+            # FIXED: Call the correct method with proper parameters
             success = self.viewer.auto_split_and_generate_yaml(folder_path, labeling_path)
 
             if not success:
@@ -1393,71 +1397,6 @@ class DeepLearningPage(QWidget):
             QMessageBox.critical(self, "Training Failed", message)
             self.show_notification("Training failed", "error")
 
-    def auto_cleanup_training_files(self, dataset_folder):
-        """
-        Automatically delete existing YOLO training files without asking
-        Removes: data.yaml, classes.txt, train/val splits, and old runs
-        """
-        try:
-            print(f"🧹 Auto-cleaning training files in: {dataset_folder}")
-            cleaned_count = 0
-
-            # 1. Remove data.yaml
-            data_yaml_path = os.path.join(dataset_folder, "data.yaml")
-            if os.path.exists(data_yaml_path):
-                os.remove(data_yaml_path)
-                cleaned_count += 1
-                print(f"  ✓ Removed data.yaml")
-
-            # 2. Remove classes.txt
-            classes_txt_path = os.path.join(dataset_folder, "classes.txt")
-            if os.path.exists(classes_txt_path):
-                os.remove(classes_txt_path)
-                cleaned_count += 1
-                print(f"  ✓ Removed classes.txt")
-
-            # 3. Remove images directory and all contents
-            images_dir = os.path.join(dataset_folder, "images")
-            if os.path.exists(images_dir):
-                shutil.rmtree(images_dir)
-                cleaned_count += 1
-                print(f"  ✓ Removed images/ folder")
-
-            # 4. Remove labels directory and all contents
-            labels_dir = os.path.join(dataset_folder, "labels")
-            if os.path.exists(labels_dir):
-                shutil.rmtree(labels_dir)
-                cleaned_count += 1
-                print(f"  ✓ Removed labels/ folder")
-
-            # 5. Remove any existing YOLO runs/train folders
-            runs_dir = os.path.join(dataset_folder, "runs")
-            if os.path.exists(runs_dir):
-                shutil.rmtree(runs_dir)
-                cleaned_count += 1
-                print(f"  ✓ Removed old runs directory")
-
-            # 6. Clean up any .cache files
-            cache_files = [f for f in os.listdir(dataset_folder) if f.endswith('.cache')]
-            for cache_file in cache_files:
-                cache_path = os.path.join(dataset_folder, cache_file)
-                os.remove(cache_path)
-                cleaned_count += 1
-                print(f"  ✓ Removed {cache_file}")
-
-            if cleaned_count > 0:
-                print(f"✅ Auto-cleaned {cleaned_count} items")
-                self.status_label.setText(f"Cleaned {cleaned_count} old training files")
-            else:
-                print("ℹ️ No existing training files to clean")
-
-            return True
-
-        except Exception as e:
-            error_msg = f"Failed to clean training files: {str(e)}"
-            print(f"❌ {error_msg}")
-            # Don't stop training if cleanup fails, just log the error
-            return False
     def run_training_with_monitoring(self, yaml_path, epochs, batch_size, model_name, save_dir, recipe_name):
         """Run YOLOv11 training - FORCE save to recipe's yolo_model folder"""
         try:

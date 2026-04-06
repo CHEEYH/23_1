@@ -6,9 +6,10 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import winsound
-import threading
 import json
 import os
+import threading
+
 
 from PySide6.QtCore import QThread, Signal
 from mediapipe.tasks import python
@@ -134,9 +135,13 @@ class OrbbecCameraThread(QThread):
         self.last_beep_time = 0.0
         self.beep_interval_sec = 0.5
         self.beep_frequency = 2500
-        self.beep_duration_ms = 300
+        self.beep_duration_ms = 50
 
         self.orbbec_homography = None
+
+        # ========== TRACK ERROR STATE ==========
+        self.error_sent = False  # Track if error message already sent
+        # ======================================
 
     def stop(self):
         self.running = False
@@ -469,14 +474,16 @@ class OrbbecCameraThread(QThread):
             self.target_enter_time = None
             self.warning_active = False
 
-    def play_alarm_sound(self):
-        try:
-            current_time = time.perf_counter()
-            if current_time - self.last_beep_time >= self.beep_interval_sec:
+    def play_alarm_sound_async(self):
+        """Non-blocking alarm sound"""
+
+        def _play():
+            try:
                 winsound.Beep(self.beep_frequency, self.beep_duration_ms)
-                self.last_beep_time = current_time
-        except Exception as e:
-            self.status_signal.emit(f"Alarm sound error: {e}")
+            except:
+                pass
+
+        threading.Thread(target=_play, daemon=True).start()
 
     def distance(self, p1, p2):
         return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
@@ -912,7 +919,7 @@ class OrbbecCameraThread(QThread):
 
             if elapsed_in_target >= self.alarm_delay_sec:
                 self.warning_active = True
-                self.play_alarm_sound()
+                self.play_alarm_sound_async()
 
                 cv2.putText(
                     frame,
@@ -938,13 +945,21 @@ class OrbbecCameraThread(QThread):
             self.target_enter_time = None
             self.warning_active = False
 
-        # ========== WRONG LOCATION FEEDBACK (WITH DELAY) ==========
+        # ========== WRONG LOCATION FEEDBACK ==========
+        # Check if hand is in wrong location (but not in target)
         if hand_in_wrong_location and not hit_target:
             # Start timer when hand first enters wrong location
             if self.wrong_location_enter_time is None:
                 self.wrong_location_enter_time = current_time
                 self.status_signal.emit(f"Hand on wrong location: {wrong_location_name}")
                 print(f"[WRONG LOCATION] Timer started for: {wrong_location_name}")
+
+                # ========== SEND "error" ONCE WHEN ENTERING ==========
+                if not self.error_sent:
+                    self.send_tcp_message_async("error")
+                    self.error_sent = True
+                    print(f"📤 [TCP] error (hand entered wrong location: {wrong_location_name})")
+                # ====================================================
 
             elapsed_in_wrong = current_time - self.wrong_location_enter_time
 
@@ -961,9 +976,9 @@ class OrbbecCameraThread(QThread):
                     2
                 )
 
-            # Trigger warning after delay
+            # Trigger warning sound after delay
             if elapsed_in_wrong >= self.wrong_location_delay_sec:
-                self.play_wrong_location_sound()
+                self.play_wrong_location_sound_async()
                 cv2.putText(
                     frame,
                     f"⚠ WRONG LOCATION! Hand on {wrong_location_name}",
@@ -973,12 +988,16 @@ class OrbbecCameraThread(QThread):
                     (0, 0, 255),
                     2
                 )
-                self.status_signal.emit(f"❌ Wrong location! Hand on {wrong_location_name}")
         else:
-            # Reset timer when hand leaves wrong location
+            # ========== HAND LEFT WRONG LOCATION - SEND "clear_error" ==========
             if self.wrong_location_enter_time is not None:
-                print(f"[WRONG LOCATION] Timer reset - hand left wrong location")
                 self.wrong_location_enter_time = None
+                # Send clear_error only once when leaving
+                if self.error_sent:
+                    self.send_tcp_message_async("clear_error")
+                    self.error_sent = False
+                    print(f"📤 [TCP] clear_error (hand left wrong location)")
+            # ==================================================================
         # ==========================================================
 
         # ========== DRAW ALL DETECTION BOXES (for wrong location visual) ==========
@@ -1023,18 +1042,38 @@ class OrbbecCameraThread(QThread):
 
         return frame
 
-    def play_wrong_location_sound(self):
-        """Play sound for wrong location (double beep, lower frequency)"""
-        try:
-            current_time = time.perf_counter()
-            if current_time - self.last_beep_time >= self.beep_interval_sec:
-                # Wrong location: lower frequency, double beep
-                winsound.Beep(1500, 200)
-                time.sleep(0.05)
-                winsound.Beep(1500, 200)
-                self.last_beep_time = current_time
-        except Exception as e:
-            self.status_signal.emit(f"Wrong location sound error: {e}")
+    def play_wrong_location_sound_async(self):
+        """Non-blocking wrong location sound"""
+
+        def _play():
+            try:
+                winsound.Beep(1500, 50)
+                winsound.Beep(1500, 50)
+            except:
+                pass
+
+        threading.Thread(target=_play, daemon=True).start()
+
+    def send_tcp_message_async(self, message):
+        """Non-blocking TCP message"""
+
+        def _send():
+            try:
+                from ui.components.pipeline_runner import PipelineRunner
+                if PipelineRunner._heartbeat_manager and PipelineRunner._heartbeat_manager.is_connected():
+                    PipelineRunner._heartbeat_manager.send_data(f"{message}\n")
+                else:
+                    import socket
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(0.5)
+                    sock.connect(('127.0.0.1', 8888))
+                    sock.send(f"{message}\n".encode())
+                    sock.close()
+                print(f"📤 [TCP] {message}")
+            except Exception as e:
+                pass
+
+        threading.Thread(target=_send, daemon=True).start()
 
     def run(self):
         try:
