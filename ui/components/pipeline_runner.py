@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from ui.components.mes_client import MESClient  # Add this import
@@ -86,6 +87,9 @@ class PipelineRunner:
     _heartbeat_manager = None
     _heartbeat_reference_count = 0
     _calibration = None
+
+    _screw_socket = None
+    _screw_connected = False
 
     @staticmethod
     def init_api_client():
@@ -1008,6 +1012,8 @@ class PipelineRunner:
 
     @staticmethod
     def cleanup(force_disconnect=True):
+        PipelineRunner.close_screw_connection()
+
         if PipelineRunner._heartbeat_manager is not None:
             PipelineRunner._heartbeat_reference_count -= 1
             if force_disconnect or PipelineRunner._heartbeat_reference_count <= 0:
@@ -1039,6 +1045,7 @@ class PipelineRunner:
     @staticmethod
     def _execute_screw_block(block_data: Dict, step_number: int, total_steps: int, parent_widget) -> bool:
         PipelineRunner._init_heartbeat_manager()
+        PipelineRunner.send_screw_start_to_server()
         dialog = QDialog(parent_widget)
         dialog.setWindowTitle(f"Step {step_number}: Screw Operation")
         dialog.showFullScreen()
@@ -1057,134 +1064,243 @@ class PipelineRunner:
         try:
             block_id = PipelineRunner._resolve_block_id(block_data)
         except Exception as e:
-            QMessageBox.warning(parent_widget, "⚠️ Missing Block ID", f"Screw block does not contain a valid block id.\n\n{str(e)}")
+            QMessageBox.warning(parent_widget, "⚠️ Missing Block ID",
+                                f"Screw block does not contain a valid block id.\n\n{str(e)}")
             return False
 
-        first_send_success, first_coord_string = PipelineRunner._send_latest_coordinates_from_folder(recipe_name, "ScrewBoxesData", block_id)
+        first_send_success, first_coord_string = PipelineRunner._send_latest_coordinates_from_folder(recipe_name,
+                                                                                                     "ScrewBoxesData",
+                                                                                                     block_id)
 
         # ── TECH HEADER BAR ──────────────────────────────────────────────
         hdr_bar = QWidget()
-        hdr_bar.setFixedHeight(64)
-        hdr_bar.setStyleSheet("background-color:#050D18;border-bottom:2px solid #FFAA00;")
+        hdr_bar.setFixedHeight(80)
+        hdr_bar.setStyleSheet(
+            "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #0A1828,stop:0.5 #060C14,stop:1 #050D18);"
+            "border-bottom:2px solid #00AAFF;")
         hdr_row = QHBoxLayout(hdr_bar)
-        hdr_row.setContentsMargins(16, 0, 16, 0); hdr_row.setSpacing(12)
-        step_badge = QLabel(f"STEP {step_number}/{total_steps}")
-        step_badge.setStyleSheet("font-size:11px;font-weight:900;color:#FFAA00;background:#030810;border:1px solid #FFAA0044;padding:3px 12px;letter-spacing:3px;font-family:Consolas;")
+        hdr_row.setContentsMargins(24, 0, 24, 0)
+        hdr_row.setSpacing(20)
+        step_badge = QLabel(f"STEP {step_number} / {total_steps}")
+        step_badge.setStyleSheet(
+            "font-size:16px;font-weight:900;color:#00AAFF;"
+            "background:#030810;border:1px solid #00AAFF55;"
+            "padding:6px 18px;letter-spacing:3px;font-family:Consolas;")
         hdr_title = QLabel("SCREW OPERATION")
-        hdr_title.setStyleSheet("font-size:20px;font-weight:900;color:#FFFFFF;letter-spacing:3px;font-family:Consolas;background:transparent;")
-        hdr_row.addWidget(step_badge); hdr_row.addWidget(hdr_title); hdr_row.addStretch()
+        hdr_title.setStyleSheet(
+            "font-size:28px;font-weight:900;color:#FFFFFF;"
+            "letter-spacing:6px;font-family:Consolas;background:transparent;")
+        hdr_row.addWidget(step_badge)
+        hdr_row.addWidget(hdr_title)
+        hdr_row.addStretch()
         layout.addWidget(hdr_bar)
 
+        # cyan separator line
+        sep = QWidget(); sep.setFixedHeight(2)
+        sep.setStyleSheet("background:#00AAFF;")
+        layout.addWidget(sep)
+
         if config:
-            info_frame = QFrame()
-            info_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-            info_frame.setStyleSheet("QFrame { border:none; border-top:1px solid #0E2A40; border-bottom:1px solid #0E2A40; background-color:#050D18; padding:0; margin:0; }")
-            info_layout = QVBoxLayout(info_frame)
-            info_layout.setContentsMargins(0, 0, 0, 0)
-            info_layout.setSpacing(0)
-
-            title_label = QLabel("  SCREW CONFIGURATION")
-            title_label.setFixedHeight(36)
-            title_label.setStyleSheet("font-size:11px;font-weight:900;color:#FFAA00;font-family:Consolas;padding:0 14px;background:#030810;border-bottom:1px solid #0E2A40;letter-spacing:4px;")
-            title_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-            info_layout.addWidget(title_label)
-
             if isinstance(config, dict):
-                screw_count = config.get('count', 'Not specified')
-                screw_type = config.get('type', 'Not specified')
-                torque = config.get('torque', 'Not specified')
+                screw_count = config.get('count', 'N/A')
+                screw_type = config.get('type', 'N/A')
+                torque = config.get('torque', 'N/A')
+                screw_length = config.get('length', 'N/A')
             else:
-                screw_count = screw_type = torque = "Not specified"
+                screw_count = screw_type = torque = screw_length = "N/A"
                 if isinstance(config, str):
                     for line in config.strip().split('\n'):
                         ll = line.lower()
-                        if 'count:' in ll: screw_count = line.split(':')[-1].strip()
-                        elif 'type:' in ll: screw_type = line.split(':')[-1].strip()
-                        elif 'torque:' in ll: torque = line.split(':')[-1].strip()
+                        if 'count:' in ll:
+                            screw_count = line.split(':')[-1].strip()
+                        elif 'type:' in ll:
+                            screw_type = line.split(':')[-1].strip()
+                        elif 'torque:' in ll:
+                            torque = line.split(':')[-1].strip()
+                        elif 'length:' in ll:
+                            screw_length = line.split(':')[-1].strip()
 
-            info_grid = QGridLayout()
-            info_grid.setSpacing(8)
-            screw_data_pairs = [("SCREW COUNT","pcs",str(screw_count)),("SCREW TYPE","",str(screw_type)),("TORQUE","Nm",str(torque))]
-            for i,(lbl,unit,val) in enumerate(screw_data_pairs):
+            # ── Data grid: 4 big cells ─────────────────────────────────
+            data_panel = QWidget()
+            data_panel.setStyleSheet(
+                "background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+                "stop:0 #071018,stop:1 #060C14);"
+                "border-bottom:1px solid #0E2A40;")
+            data_grid = QGridLayout(data_panel)
+            data_grid.setSpacing(1)
+            data_grid.setContentsMargins(0, 0, 0, 0)
+
+            screw_data_pairs = [
+                ("SCREW COUNT", str(screw_count), "pcs"),
+                ("SCREW TYPE",  str(screw_type),  ""),
+                ("SCREW LENGTH",str(screw_length), "mm"),
+                ("TORQUE",      str(torque),       "Nm"),
+            ]
+
+            for i, (lbl, val, unit) in enumerate(screw_data_pairs):
                 cell = QWidget()
-                cell.setStyleSheet("background:#050D18;border-right:1px solid #0E2A40;border-bottom:1px solid #0E2A40;")
-                cl = QVBoxLayout(cell); cl.setContentsMargins(14,10,14,10); cl.setSpacing(4)
+                is_right = (i % 2 == 1)
+                cell.setStyleSheet(
+                    f"background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+                    f"stop:0 #0A1828,stop:1 #060C14);"
+                    f"border-right:{'0' if is_right else '1'}px solid #0E2A40;"
+                    f"border-bottom:1px solid #0E2A40;"
+                    f"border-left:{'3px solid #00AAFF44' if not is_right else 'none'};")
+                cl = QVBoxLayout(cell)
+                cl.setContentsMargins(28, 20, 28, 20)
+                cl.setSpacing(8)
+
                 lw = QLabel(lbl)
-                lw.setStyleSheet("font-size:10px;color:#1A4A6A;letter-spacing:3px;font-family:Consolas;")
-                unit_str = f"  {unit}" if unit else ""
-                vw = QLabel(val + unit_str)
-                vw.setStyleSheet("font-size:28px;color:#00AAFF;font-weight:900;font-family:Consolas;letter-spacing:1px;")
-                cl.addWidget(lw); cl.addWidget(vw)
-                info_grid.addWidget(cell, i//2, i%2)
-            info_layout.addLayout(info_grid)
-            layout.addWidget(info_frame, 0)
+                lw.setStyleSheet(
+                    "font-size:22px;color:#2A5A8A;letter-spacing:4px;"
+                    "font-family:Consolas;font-weight:900;background:transparent;")
+
+                val_row = QWidget(); val_row.setStyleSheet("background:transparent;")
+                vrl = QHBoxLayout(val_row)
+                vrl.setContentsMargins(0, 0, 0, 0); vrl.setSpacing(10)
+                vw = QLabel(val)
+                vw.setStyleSheet(
+                    "font-size:52px;color:#00AAFF;font-weight:900;"
+                    "font-family:Consolas;letter-spacing:2px;background:transparent;")
+                uw = QLabel(unit)
+                uw.setStyleSheet(
+                    "font-size:20px;color:#1A4A6A;font-weight:900;"
+                    "font-family:Consolas;background:transparent;"
+                    "padding-top:24px;")
+                vrl.addWidget(vw); vrl.addWidget(uw); vrl.addStretch()
+
+                cl.addWidget(lw)
+                cl.addWidget(val_row)
+                data_grid.addWidget(cell, i // 2, i % 2)
+
+            layout.addWidget(data_panel)
+
         else:
             warning_frame = QFrame()
-            warning_frame.setStyleSheet("QFrame { border: 1px solid #661020; border-left: 3px solid #FF3344; border-radius: 0px; background-color: #1A0508; padding: 30px; margin: 12px; }")
+            warning_frame.setStyleSheet(
+                "QFrame { border:1px solid #661020; border-left:3px solid #FF3344; "
+                "border-radius:0px; background:#1A0508; padding:30px; margin:12px; }")
             warning_layout = QVBoxLayout(warning_frame)
             warning_label = QLabel("⚠  NO CONFIGURATION FOUND")
-            warning_label.setStyleSheet("font-size: 20px; font-weight: 800; color: #FF3344; font-family: Consolas; letter-spacing: 2px;")
+            warning_label.setStyleSheet(
+                "font-size:24px;font-weight:900;color:#FF3344;font-family:Consolas;letter-spacing:3px;")
             warning_label.setAlignment(Qt.AlignCenter)
             warning_layout.addWidget(warning_label)
             layout.addWidget(warning_frame)
 
-        # Instructions
-        instructions_frame = QFrame()
-        instructions_frame.setStyleSheet("QFrame { border:none; border-top:1px solid #0E2A40; background:#050D18; padding:12px 16px; }")
-        instructions_layout = QVBoxLayout(instructions_frame)
-        instructions_title = QLabel("INSTRUCTIONS")
-        instructions_title.setStyleSheet("color: #2A5A7A; font-family: Consolas; font-weight: 900; font-size: 10px; padding-bottom: 6px; border-bottom: 1px solid #0E2A40; letter-spacing: 4px; margin-bottom:6px;")
-        instructions_text = QLabel("1. Prepare the screwdriver / tool\n2. Position at specified locations\n3. Apply correct torque\n4. Verify tightness\n5. Check alignment")
-        instructions_text.setText("01 · Prepare tool / screwdriver\n02 · Position at target locations\n03 · Apply specified torque\n04 · Verify tightness\n05 · Check alignment")
-        instructions_text.setStyleSheet("font-size:15px;color:#AACCEE;font-family:Consolas;line-height:1.8;")
-        instructions_layout.addWidget(instructions_title)
-        instructions_layout.addWidget(instructions_text)
-        layout.addWidget(instructions_frame)
+        # # ── Instructions panel ────────────────────────────────────────────
+        # instr_panel = QWidget()
+        # instr_panel.setStyleSheet(
+        #     "background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+        #     "stop:0 #060C14,stop:1 #040A10);"
+        #     "border-top:1px solid #0E2A40;")
+        # instr_layout = QVBoxLayout(instr_panel)
+        # instr_layout.setContentsMargins(32, 24, 32, 24)
+        # instr_layout.setSpacing(16)
+        #
+        # instr_title = QLabel("OPERATOR INSTRUCTIONS")
+        # instr_title.setStyleSheet(
+        #     "font-size:12px;font-weight:900;color:#2A5A8A;"
+        #     "letter-spacing:5px;font-family:Consolas;"
+        #     "border-bottom:1px solid #0E2A40;padding-bottom:10px;background:transparent;")
+        # instr_layout.addWidget(instr_title)
+        #
+        # steps_data = [
+        #     ("01", "Prepare tool or screwdriver"),
+        #     ("02", "Position at target locations"),
+        #     ("03", "Apply specified torque"),
+        #     ("04", "Verify tightness on all screws"),
+        #     ("05", "Check final alignment"),
+        # ]
+        # for num, text in steps_data:
+        #     row = QWidget(); row.setStyleSheet("background:transparent;")
+        #     rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(16)
+        #     num_lbl = QLabel(num)
+        #     num_lbl.setFixedWidth(52)
+        #     num_lbl.setStyleSheet(
+        #         "font-size:18px;font-weight:900;color:#00AAFF55;"
+        #         "font-family:Consolas;background:transparent;")
+        #     dot_lbl = QLabel("·")
+        #     dot_lbl.setStyleSheet(
+        #         "font-size:18px;color:#1A3A5C;font-family:Consolas;background:transparent;")
+        #     dot_lbl.setFixedWidth(16)
+        #     txt_lbl = QLabel(text)
+        #     txt_lbl.setStyleSheet(
+        #         "font-size:20px;color:#AACCEE;font-family:Consolas;background:transparent;")
+        #     rl.addWidget(num_lbl); rl.addWidget(dot_lbl); rl.addWidget(txt_lbl); rl.addStretch()
+        #     instr_layout.addWidget(row)
+        #
+        # layout.addWidget(instr_panel, 1)
+        # ── Vertical spacer (fills space between data grid and footer) ────
+        layout.addStretch(1)
 
-        button_layout = QHBoxLayout()
+        # ── Button footer ─────────────────────────────────────────────────
+        btn_footer = QWidget()
+        btn_footer.setFixedHeight(100)
+        btn_footer.setStyleSheet(
+            "background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            "stop:0 #0A1828,stop:1 #060C14);"
+            "border-top:2px solid #00AAFF33;")
+        btn_row = QHBoxLayout(btn_footer)
+        btn_row.setContentsMargins(24, 16, 24, 16)
+        btn_row.setSpacing(16)
 
         cancel_btn = QPushButton("✕  CANCEL")
-        cancel_btn.setFixedHeight(58)
+        cancel_btn.setFixedHeight(66)
         cancel_btn.setStyleSheet("""
             QPushButton {
-                font-size: 17px; font-weight: 800;
-                background-color: #1A0508; color: #FF3344;
-                border: 1px solid #661020; border-bottom: 5px solid #440010;
-                border-left: 3px solid #FF3344; border-radius: 2px;
-                min-width: 180px; font-family: Consolas; letter-spacing: 1px;
+                font-size: 22px; font-weight: 900;
+                background: transparent;
+                color: #FF3344;
+                border: 1px solid #FF334455;
+                border-radius: 2px;
+                min-width: 200px;
+                font-family: Consolas; letter-spacing: 2px;
             }
-            QPushButton:hover { background-color: #220810; color: #FFFFFF; border-color: #FF3344; }
-            QPushButton:pressed { border-bottom: 2px solid #440010; padding-top: 3px; }
+            QPushButton:hover {
+                background: #1A0508;
+                border: 1px solid #FF3344;
+                color: #FFFFFF;
+            }
+            QPushButton:pressed { background: #220810; }
         """)
 
-        ok_btn = QPushButton("✓  OK — CONTINUE")
-        ok_btn.setFixedHeight(58)
+        ok_btn = QPushButton("✓  OK  —  CONTINUE")
+        ok_btn.setFixedHeight(66)
         ok_btn.setStyleSheet("""
             QPushButton {
-                font-size: 17px; font-weight: 800;
-                background-color: #031A10; color: #00FF88;
-                border: 1px solid #0A5030; border-bottom: 5px solid #051008;
-                border-left: 3px solid #00FF88; border-radius: 2px;
-                min-width: 260px; margin-top: 8px;
-                font-family: Consolas; letter-spacing: 1px;
+                font-size: 22px; font-weight: 900;
+                background-color: #031A10;
+                color: #00FF88;
+                border: none;
+                border-top: 2px solid #00FF88;
+                border-radius: 0px;
+                min-width: 320px;
+                font-family: Consolas; letter-spacing: 3px;
             }
-            QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
-            QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
+            QPushButton:hover { background-color: #052A18; color: #FFFFFF; }
+            QPushButton:pressed { background-color: #021008; }
         """)
 
         cancel_btn.clicked.connect(dialog.reject)
 
         def on_ok_continue():
-            second_send_success, second_coord_string = PipelineRunner._send_latest_coordinates_from_folder(recipe_name, "ScrewBoxesData2", block_id)
+            second_send_success, second_coord_string = PipelineRunner._send_latest_coordinates_from_folder(recipe_name,
+                                                                                                           "ScrewBoxesData2",
+                                                                                                           block_id)
+            PipelineRunner.send_screw_stop_to_server()
+
             dialog.accept()
             if video_path and os.path.exists(video_path):
-                PipelineRunner._show_video_dialog(video_path=video_path, parent_widget=parent_widget, title=f"Step {step_number}: Screw Video")
+                PipelineRunner._show_video_dialog(video_path=video_path, parent_widget=parent_widget,
+                                                  title=f"Step {step_number}: Screw Video")
 
         ok_btn.clicked.connect(on_ok_continue)
-        button_layout.addWidget(cancel_btn)
-        button_layout.addStretch()
-        button_layout.addWidget(ok_btn)
-        layout.addLayout(button_layout)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(ok_btn)
+        layout.addWidget(btn_footer)
 
         result = dialog.exec()
         return result == QDialog.Accepted
@@ -2344,3 +2460,96 @@ class PipelineRunner:
                 parent_widget.fetch_mes_recipe_once()
         except Exception as e:
             print(f"⚠️ Failed to notify MainPage to refresh MES: {e}")
+
+    @staticmethod
+    def send_recipe_to_screw_server(recipe_name: str) -> bool:
+        try:
+            server = config_manager.config_data.get('tcp_screw', {}).get('server', '127.0.0.1')
+            port = config_manager.config_data.get('tcp_screw', {}).get('port', 5001)
+
+            # Check if already connected
+            if PipelineRunner._screw_socket is None:
+                print(f"📤 Creating persistent connection to {server}:{port}")
+                PipelineRunner._screw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                PipelineRunner._screw_socket.settimeout(5)
+                PipelineRunner._screw_socket.connect((server, port))
+                PipelineRunner._screw_connected = True
+                print(f"✅ Persistent connection established (will stay open)")
+
+            # Send data (connection stays open)
+            message = recipe_name + "\n"
+            PipelineRunner._screw_socket.sendall(message.encode('utf-8'))
+            print(f"✅ Recipe name sent: {recipe_name}")
+            return True
+
+        except Exception as e:
+            print(f"❌ Failed to send: {e}")
+            # Mark as disconnected on error
+            PipelineRunner._screw_connected = False
+            PipelineRunner._screw_socket = None
+            return False
+
+    @staticmethod
+    def close_screw_connection():
+        """Close the persistent connection (call on app exit)"""
+        if PipelineRunner._screw_socket is not None:
+            try:
+                PipelineRunner._screw_socket.close()
+                print(f"✅ Screw server connection closed")
+            except Exception as e:
+                print(f"⚠️ Error closing: {e}")
+            finally:
+                PipelineRunner._screw_socket = None
+                PipelineRunner._screw_connected = False
+
+    @staticmethod
+    def send_screw_start_to_server() -> bool:
+        """Send 'screw_start' command to TCP screw server on port 5001"""
+        try:
+            server = config_manager.config_data.get('tcp_screw', {}).get('server', '127.0.0.1')
+            port = config_manager.config_data.get('tcp_screw', {}).get('port', 5001)
+
+            # Check if already connected
+            if PipelineRunner._screw_socket is None:
+                print(f"📤 Creating persistent connection to {server}:{port}")
+                PipelineRunner._screw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                PipelineRunner._screw_socket.settimeout(5)
+                PipelineRunner._screw_socket.connect((server, port))
+                PipelineRunner._screw_connected = True
+                print(f"✅ Persistent connection established")
+
+            # Send screw_start command
+            PipelineRunner._screw_socket.sendall(b"screw_start\n")
+            print(f"✅ Screw start command sent")
+            return True
+
+        except Exception as e:
+            print(f"❌ Failed to send screw start: {e}")
+            PipelineRunner._screw_socket = None
+            return False
+
+    @staticmethod
+    def send_screw_stop_to_server() -> bool:
+        """Send 'screw_stop' command to TCP screw server on port 5001"""
+        try:
+            server = config_manager.config_data.get('tcp_screw', {}).get('server', '127.0.0.1')
+            port = config_manager.config_data.get('tcp_screw', {}).get('port', 5001)
+
+            # Check if already connected
+            if PipelineRunner._screw_socket is None:
+                print(f"📤 Creating persistent connection to {server}:{port}")
+                PipelineRunner._screw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                PipelineRunner._screw_socket.settimeout(5)
+                PipelineRunner._screw_socket.connect((server, port))
+                PipelineRunner._screw_connected = True
+                print(f"✅ Persistent connection established")
+
+            # Send screw_stop command
+            PipelineRunner._screw_socket.sendall(b"screw_stop\n")
+            print(f"✅ Screw stop command sent")
+            return True
+
+        except Exception as e:
+            print(f"❌ Failed to send screw stop: {e}")
+            PipelineRunner._screw_socket = None
+            return False

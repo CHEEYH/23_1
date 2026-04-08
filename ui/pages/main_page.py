@@ -895,6 +895,7 @@ class MainPage(QWidget):
 
     def force_ui_update(self, recipe_name, job_details):
         job_title = job_details.get('title') or job_details.get('workOrder') or 'Unknown'
+        old_recipe = self.current_recipe
         self.current_recipe = recipe_name;
         self.current_job_details = job_details
         self.current_job_title = job_title;
@@ -903,6 +904,10 @@ class MainPage(QWidget):
         self.has_active_mes_job = True
         if config_manager.current_recipe != recipe_name:
             config_manager.set_current_recipe(recipe_name)
+
+        if old_recipe != recipe_name and recipe_name:
+            print(f"🔄 Recipe changed from '{old_recipe}' to '{recipe_name}' - sending to port 5001")
+            PipelineRunner.send_recipe_to_screw_server(recipe_name)
 
         self.waiting_card.setVisible(False);
         self.recipe_card.setVisible(True)

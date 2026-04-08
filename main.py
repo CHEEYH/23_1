@@ -1,27 +1,65 @@
-# main.py
 import sys
 import threading
+import time
 from PySide6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 
-# Import Scanner as a module
+# Import modules
 import Scanner
+import sudong_backend_clean
 
 
 def start_tcp_server():
+    """Start Scanner's TCP server."""
     try:
-        # Start the TCP server
         server = Scanner.TCPServer()
         server.start()
+        print("[MAIN] Scanner TCPServer started")
     except Exception as e:
-        print(f"Error starting TCPServer: {e}")
+        print(f"[MAIN] Error starting TCPServer: {e}")
+
+
+def start_sudong_backend():
+    """Start Sudong backend safely."""
+    try:
+        print("[MAIN] Starting Sudong backend...")
+
+        if hasattr(sudong_backend_clean, "main"):
+            sudong_backend_clean.main()
+            print("[MAIN] Sudong backend main() started")
+        else:
+            print("[MAIN] sudong_backend_clean.main() not found")
+
+    except Exception as e:
+        print(f"[MAIN] Error starting Sudong backend: {e}")
+
+
+def cleanup():
+    """Cleanup backend workers on app exit."""
+    print("[MAIN] Cleaning up...")
+
+    if hasattr(sudong_backend_clean, "live_worker"):
+        try:
+            sudong_backend_clean.live_worker.stop()
+            print("[MAIN] live_worker stopped")
+        except Exception as e:
+            print(f"[MAIN] Error stopping live_worker: {e}")
+
+    if hasattr(sudong_backend_clean, "selector_worker"):
+        try:
+            sudong_backend_clean.selector_worker.stop()
+            print("[MAIN] selector_worker stopped")
+        except Exception as e:
+            print(f"[MAIN] Error stopping selector_worker: {e}")
+
+    print("[MAIN] Cleanup complete")
 
 
 def main():
-
+    # Create Qt application first
     app = QApplication(sys.argv)
 
-    # 设置应用样式l
+    # Set application style
     app.setStyle("Fusion")
     app.setStyleSheet("""
         QMainWindow {
@@ -44,12 +82,29 @@ def main():
         }
     """)
 
-    # Start TCPServer in a background thread
-    server_thread = threading.Thread(target=start_tcp_server, daemon=True)
-    server_thread.start()
+    # Start Scanner TCPServer in background thread
+    scanner_thread = threading.Thread(
+        target=start_tcp_server,
+        daemon=True
+    )
+    scanner_thread.start()
 
+    # Start Sudong backend in background thread
+    sudong_thread = threading.Thread(
+        target=start_sudong_backend,
+        daemon=True
+    )
+    sudong_thread.start()
+
+    # Give threads a moment to initialize
+    time.sleep(0.5)
+
+    # Create and show main window
     window = MainWindow()
     window.show()
+
+    # Cleanup on exit
+    app.aboutToQuit.connect(cleanup)
 
     sys.exit(app.exec())
 
