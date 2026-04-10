@@ -561,7 +561,7 @@ class AssemblyDialog(QDialog):
 
         if not self.available_products:
             if self.annotation_folder:
-                empty_text = f"NO BMP IMAGES FOUND\n{os.path.basename(self.annotation_folder)}"
+                empty_text = f"NO IMAGES FOUND\n{os.path.basename(self.annotation_folder)}\n(Supported: BMP, JPG, PNG, TIFF, WEBP)"
             else:
                 empty_text = "NO ANNOTATION FOLDER FOUND"
             empty_label = QLabel(empty_text)
@@ -1403,31 +1403,45 @@ class AssemblyDialog(QDialog):
             self.annotation_folder = self.get_annotation_folder_path()
             if not self.annotation_folder:
                 QMessageBox.warning(self, "⚠️ Annotation Folder Not Found",
-                    "The 'Annotation' folder was not found in the current recipe.")
-                self.update_gallery(); return
-            bmp_files = []
-            for pattern in [os.path.join(self.annotation_folder, "**", "*.bmp"),
-                             os.path.join(self.annotation_folder, "*.bmp")]:
+                                    "The 'Annotation' folder was not found in the current recipe.")
+                self.update_gallery();
+                return
+
+            # Define supported image extensions
+            image_extensions = ['*.bmp', '*.jpg', '*.jpeg', '*.png', '*.tiff', '*.tif', '*.webp']
+            image_files = []
+
+            for pattern in image_extensions:
                 try:
-                    bmp_files.extend(glob.glob(pattern, recursive=True))
+                    # Search in root folder
+                    image_files.extend(glob.glob(os.path.join(self.annotation_folder, pattern)))
+                    # Search recursively in subfolders
+                    image_files.extend(glob.glob(os.path.join(self.annotation_folder, "**", pattern), recursive=True))
                 except:
                     pass
-            bmp_files = list(set(bmp_files)); bmp_files.sort()
-            if not bmp_files:
-                self.update_gallery(); return
+
+            # Remove duplicates and sort
+            image_files = list(set(image_files))
+            image_files.sort()
+
+            if not image_files:
+                self.update_gallery()
+                return
+
             product_counter = {}
-            for bmp_path in bmp_files:
-                filename = os.path.basename(bmp_path)
+            for img_path in image_files:
+                filename = os.path.basename(img_path)
                 base_name = os.path.splitext(filename)[0]
                 product_name = self.clean_product_name(base_name)
                 product_counter[product_name] = product_counter.get(product_name, 0) + 1
-                product_id = f"{product_name}_{product_counter[product_name]}" if product_counter[product_name] > 1 else product_name
+                product_id = f"{product_name}_{product_counter[product_name]}" if product_counter[
+                                                                                      product_name] > 1 else product_name
                 try:
-                    rel_path = os.path.relpath(bmp_path, self.annotation_folder)
+                    rel_path = os.path.relpath(img_path, self.annotation_folder)
                 except:
                     rel_path = filename
                 self.available_products.append({
-                    'id': product_id, 'name': base_name, 'image_path': bmp_path,
+                    'id': product_id, 'name': base_name, 'image_path': img_path,
                     'filename': filename, 'relative_path': rel_path, 'original_name': base_name})
             self.update_gallery()
         except Exception as e:

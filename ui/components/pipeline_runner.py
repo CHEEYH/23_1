@@ -9,7 +9,7 @@ from ui.components.mes_client import MESClient  # Add this import
 
 from PySide6.QtWidgets import (
     QMessageBox, QDialog, QVBoxLayout, QLabel, QPushButton,
-    QFrame, QHBoxLayout, QGridLayout, QSplitter, QWidget, QSizePolicy
+    QFrame, QHBoxLayout, QGridLayout, QSplitter, QWidget, QSizePolicy, QApplication
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QImage
@@ -90,6 +90,46 @@ class PipelineRunner:
 
     _screw_socket = None
     _screw_connected = False
+
+    @staticmethod
+    def get_orbbec_thread():
+        try:
+            from PySide6.QtWidgets import QApplication
+
+            for widget in QApplication.topLevelWidgets():
+                if hasattr(widget, 'orbbec_thread') and widget.orbbec_thread:
+                    return widget.orbbec_thread
+
+                if hasattr(widget, 'main_page') and hasattr(widget.main_page, 'orbbec_thread'):
+                    if widget.main_page.orbbec_thread:
+                        return widget.main_page.orbbec_thread
+        except Exception as e:
+            print(f"[PipelineRunner] ⚠️ Cannot find Orbbec thread: {e}")
+
+        return None
+
+    @staticmethod
+    def set_orbbec_trigger(thread, handler, state="idle"):
+        if not thread:
+            return
+
+        try:
+            thread.start_pipeline_signal.disconnect()
+        except:
+            pass
+
+        try:
+            thread.confirm_qr_signal.disconnect()
+        except:
+            pass
+
+        thread.set_trigger_state(state)
+        thread.trigger_was_used = False
+        thread.trigger_enter_time = None
+        thread.use_trigger_boxes = True
+
+        if handler:
+            thread.start_pipeline_signal.connect(handler)
 
     @staticmethod
     def init_api_client():
@@ -273,7 +313,7 @@ class PipelineRunner:
     def _show_video_dialog(video_path: str, parent_widget=None, title: str = "Video") -> bool:
         try:
             from PySide6.QtCore import QUrl
-            from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+            from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QWidget, QHBoxLayout, QSplitter
             from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
             from PySide6.QtMultimediaWidgets import QVideoWidget
 
@@ -286,17 +326,50 @@ class PipelineRunner:
             layout.setContentsMargins(0, 0, 8, 8)
             layout.setSpacing(8)
 
-            vid_hdr = QWidget(); vid_hdr.setFixedHeight(56)
+            # Get Orbbec thread and take over trigger for THIS dialog
+            orbbec_thread = PipelineRunner.get_orbbec_thread()
+            _video_hand_triggered = {"done": False}
+
+            # Header
+            vid_hdr = QWidget()
+            vid_hdr.setFixedHeight(56)
             vid_hdr.setStyleSheet("background:#050D18;border-bottom:2px solid #FFAA00;")
-            vid_hdr_row = QHBoxLayout(vid_hdr); vid_hdr_row.setContentsMargins(14,0,14,0); vid_hdr_row.setSpacing(10)
-            vid_badge = QLabel("VIDEO")
-            vid_badge.setStyleSheet("font-size:11px;font-weight:900;color:#FFAA00;background:#030810;border:1px solid #FFAA0044;padding:3px 10px;letter-spacing:3px;font-family:Consolas;")
+            vid_hdr_row = QHBoxLayout(vid_hdr)
+            vid_hdr_row.setContentsMargins(14, 0, 14, 0)
+            vid_hdr_row.setSpacing(10)
+
+            # vid_badge = QLabel("VIDEO")
+            # vid_badge.setStyleSheet(
+            #     "font-size:11px;font-weight:900;color:#FFAA00;"
+            #     "background:#030810;border:1px solid #FFAA0044;"
+            #     "padding:3px 10px;letter-spacing:3px;font-family:Consolas;"
+            # )
+
             vid_title = QLabel(title.upper())
-            vid_title.setStyleSheet("font-size:26px;font-weight:900;color:#FFFFFF;letter-spacing:2px;font-family:Consolas;background:transparent;")
-            vid_hdr_row.addWidget(vid_badge); vid_hdr_row.addWidget(vid_title); vid_hdr_row.addStretch()
+            vid_title.setStyleSheet(
+                "font-size:26px;font-weight:900;color:#FFFFFF;"
+                "letter-spacing:2px;font-family:Consolas;background:transparent;"
+            )
+
+            # vid_hdr_row.addWidget(vid_badge)
+            vid_hdr_row.addWidget(vid_title)
+            vid_hdr_row.addStretch()
             layout.addWidget(vid_hdr)
 
+            # If video file not found
             if not os.path.exists(video_path):
+                content_split = QSplitter(Qt.Horizontal)
+                content_split.setStyleSheet("""
+                    QSplitter::handle {
+                        background-color: #0E2A40;
+                        width: 2px;
+                    }
+                """)
+
+                left_panel = QWidget()
+                left_layout = QVBoxLayout(left_panel)
+                left_layout.setContentsMargins(8, 8, 8, 8)
+
                 error_label = QLabel(f"❌ Video not found:\n{video_path}")
                 error_label.setAlignment(Qt.AlignCenter)
                 error_label.setStyleSheet("""
@@ -310,28 +383,93 @@ class PipelineRunner:
                         border-radius: 2px;
                     }
                 """)
-                layout.addWidget(error_label)
-                close_btn = QPushButton("Close")
+                left_layout.addWidget(error_label)
+
+                right_panel = QWidget()
+                right_panel.setStyleSheet("background-color: #030810; border: 1px solid #0E2A40;")
+
+                content_split.addWidget(left_panel)
+                content_split.addWidget(right_panel)
+                content_split.setSizes([1100, 500])
+
+                layout.addWidget(content_split, stretch=1)
+
+                close_btn = QPushButton("✓  Continue")
                 close_btn.setStyleSheet("""
                     QPushButton {
                         font-size: 17px; font-weight: 800;
-                        padding: 14px 32px;
-                        background-color: #1A0508; color: #FF3344;
-                        border: 1px solid #661020; border-bottom: 5px solid #440010;
-                        border-left: 3px solid #FF3344; border-radius: 2px;
-                        font-family: Consolas; letter-spacing: 1px;
+                        padding: 16px 32px;
+                        background-color: #031A10; color: #00FF88;
+                        border: 1px solid #0A5030; border-bottom: 5px solid #051008;
+                        border-left: 3px solid #00FF88; border-radius: 2px;
+                        min-width: 240px; font-family: Consolas; letter-spacing: 1px;
                     }
-                    QPushButton:hover { background-color: #220810; color: #FFFFFF; }
+                    QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
+                    QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
                 """)
-                close_btn.clicked.connect(dialog.accept)
+
+                def close_missing_video():
+                    if _video_hand_triggered["done"]:
+                        return
+                    _video_hand_triggered["done"] = True
+                    dialog.accept()
+
+                def on_video_hand_trigger_missing():
+                    try:
+                        if _video_hand_triggered["done"]:
+                            return
+                        print("[SCREW VIDEO] Hand detected in trigger zone (missing video page)")
+                        close_missing_video()
+                    except Exception as e:
+                        print(f"[SCREW VIDEO] Trigger error (missing video): {e}")
+
+                close_btn.clicked.connect(close_missing_video)
                 layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_video_hand_trigger_missing, state="idle")
+
+                def restore_trigger_missing(_=None):
+                    try:
+                        PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
+                    except Exception as e:
+                        print(f"[SCREW VIDEO] Restore trigger error (missing video): {e}")
+
+                dialog.finished.connect(restore_trigger_missing)
+
                 return dialog.exec() == QDialog.Accepted
 
-            video_widget = QVideoWidget()
-            video_widget.setStyleSheet("background-color: #030810;")
-            layout.addWidget(video_widget, stretch=1)
+            # Main split area: LEFT = video, RIGHT = blank
+            content_split = QSplitter(Qt.Horizontal)
+            content_split.setStyleSheet("""
+                QSplitter::handle {
+                    background-color: #0E2A40;
+                    width: 2px;
+                }
+            """)
 
-            close_btn = QPushButton("✓  Close Video & Continue")
+            # Left panel - video
+            left_panel = QWidget()
+            left_panel.setStyleSheet("background-color: #030810;")
+            left_layout = QVBoxLayout(left_panel)
+            left_layout.setContentsMargins(8, 8, 8, 8)
+            left_layout.setSpacing(0)
+
+            video_widget = QVideoWidget()
+            video_widget.setStyleSheet("background-color: #000000; border: 1px solid #0E2A40;")
+            left_layout.addWidget(video_widget)
+
+            # Right panel - blank
+            right_panel = QWidget()
+            right_panel.setStyleSheet("background-color: #030810; border: 1px solid #0E2A40;")
+
+            content_split.addWidget(left_panel)
+            content_split.addWidget(right_panel)
+            content_split.setSizes([1100, 500])
+
+            layout.addWidget(content_split, stretch=1)
+
+            # Bottom button
+            close_btn = QPushButton("✓ Continue")
             close_btn.setStyleSheet("""
                 QPushButton {
                     font-size: 17px; font-weight: 800;
@@ -366,11 +504,42 @@ class PipelineRunner:
             player.play()
 
             def close_video():
-                player.stop()
+                if _video_hand_triggered["done"]:
+                    return
+                _video_hand_triggered["done"] = True
+                try:
+                    player.stop()
+                except Exception:
+                    pass
+                PipelineRunner.send_screw_stop_to_server()
                 dialog.accept()
 
+            def on_video_hand_trigger():
+                try:
+                    if _video_hand_triggered["done"]:
+                        return
+                    print("[SCREW VIDEO] Hand detected in trigger zone!")
+                    close_video()
+                except Exception as e:
+                    print(f"[SCREW VIDEO] Trigger error: {e}")
+
             close_btn.clicked.connect(close_video)
-            dialog.finished.connect(lambda _: player.stop())
+
+            def restore_trigger(_=None):
+                try:
+                    player.stop()
+                except Exception:
+                    pass
+
+                try:
+                    PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
+                    print("[SCREW VIDEO] Trigger restored/cleared")
+                except Exception as e:
+                    print(f"[SCREW VIDEO] Restore trigger error: {e}")
+
+            PipelineRunner.set_orbbec_trigger(orbbec_thread, on_video_hand_trigger, state="idle")
+            dialog.finished.connect(restore_trigger)
+
             return dialog.exec() == QDialog.Accepted
 
         except Exception as e:
@@ -771,7 +940,8 @@ class PipelineRunner:
             traceback.print_exc()
             return False
         finally:
-            PipelineRunner.cleanup(force_disconnect=True)
+                PipelineRunner.cleanup(force_disconnect=True)
+
 
     @staticmethod
     def _extract_part_from_product_name(product_name: str) -> str:
@@ -857,7 +1027,7 @@ class PipelineRunner:
                     return "waiting", {'missing_parts': missing_parts_list + ([part_needed] if part_needed else []), 'step': assembly_step}
                 elif reply == "cancel":
                     return "cancelled", {}
-            step_success = PipelineRunner._execute_assembly_step_like_dialog(assembly_step, total_assembly_steps, selection, parent_widget)
+            step_success = PipelineRunner._execute_assembly_step_like_dialog(assembly_step, total_assembly_steps, step_num, total_steps, selection, parent_widget)
             if step_success:
                 try:
                     PipelineRunner._api_client.deduct_inventory(part_needed, 1)
@@ -1011,16 +1181,22 @@ class PipelineRunner:
         return True
 
     @staticmethod
-    def cleanup(force_disconnect=True):
-        PipelineRunner.close_screw_connection()
+    def cleanup(force_disconnect=True, keep_orbbec=False):
+        """Cleanup resources - can selectively keep Orbbec alive"""
 
-        if PipelineRunner._heartbeat_manager is not None:
-            PipelineRunner._heartbeat_reference_count -= 1
-            if force_disconnect or PipelineRunner._heartbeat_reference_count <= 0:
-                PipelineRunner._heartbeat_reference_count = 0
-                if PipelineRunner._heartbeat_manager.is_connected():
-                    PipelineRunner._heartbeat_manager.disconnect()
+        if keep_orbbec:
+            print("[PipelineRunner] Partial cleanup - keeping Orbbec alive")
+            # Only cleanup TCP/heartbeat, not Orbbec
+            if PipelineRunner._heartbeat_manager:
+                PipelineRunner._heartbeat_manager.disconnect()
                 PipelineRunner._heartbeat_manager = None
+        else:
+            # Full cleanup including Orbbec
+            if PipelineRunner._heartbeat_manager:
+                PipelineRunner._heartbeat_manager.disconnect()
+                PipelineRunner._heartbeat_manager = None
+
+            print("[PipelineRunner] Skipping Orbbec stop (always-on mode)")
 
     @staticmethod
     def remove_pending_job(recipe_name: str, job_id: str):
@@ -1045,7 +1221,7 @@ class PipelineRunner:
     @staticmethod
     def _execute_screw_block(block_data: Dict, step_number: int, total_steps: int, parent_widget) -> bool:
         PipelineRunner._init_heartbeat_manager()
-        PipelineRunner.send_screw_start_to_server()
+        # PipelineRunner.send_screw_start_to_server()
         dialog = QDialog(parent_widget)
         dialog.setWindowTitle(f"Step {step_number}: Screw Operation")
         dialog.showFullScreen()
@@ -1072,6 +1248,9 @@ class PipelineRunner:
                                                                                                      "ScrewBoxesData",
                                                                                                      block_id)
 
+        orbbec_thread = PipelineRunner.get_orbbec_thread()
+        screw_trigger_done = {"done": False}
+
         # ── TECH HEADER BAR ──────────────────────────────────────────────
         hdr_bar = QWidget()
         hdr_bar.setFixedHeight(80)
@@ -1082,11 +1261,11 @@ class PipelineRunner:
         hdr_row = QHBoxLayout(hdr_bar)
         hdr_row.setContentsMargins(24, 0, 24, 0)
         hdr_row.setSpacing(20)
-        step_badge = QLabel(f"STEP {step_number} / {total_steps}")
+        step_badge = QLabel(f"STEP {step_number}/{total_steps}")  # No spaces around slash
         step_badge.setStyleSheet(
-            "font-size:16px;font-weight:900;color:#00AAFF;"
-            "background:#030810;border:1px solid #00AAFF55;"
-            "padding:6px 18px;letter-spacing:3px;font-family:Consolas;")
+            "font-size:16px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:4px 14px;letter-spacing:2px;font-family:Consolas;")
+        step_badge.setFixedHeight(24)  # Match assembly height
+        step_badge.setContentsMargins(0, 0, 0, 0)
         hdr_title = QLabel("SCREW OPERATION")
         hdr_title.setStyleSheet(
             "font-size:28px;font-weight:900;color:#FFFFFF;"
@@ -1283,20 +1462,73 @@ class PipelineRunner:
             QPushButton:pressed { background-color: #021008; }
         """)
 
-        cancel_btn.clicked.connect(dialog.reject)
+        def on_cancel():
+            if screw_trigger_done["done"]:
+                return
+            screw_trigger_done["done"] = True
+            dialog.reject()
+
+        cancel_btn.clicked.connect(on_cancel)
 
         def on_ok_continue():
-            second_send_success, second_coord_string = PipelineRunner._send_latest_coordinates_from_folder(recipe_name,
-                                                                                                           "ScrewBoxesData2",
-                                                                                                           block_id)
-            PipelineRunner.send_screw_stop_to_server()
+            if screw_trigger_done["done"]:
+                return
+
+            screw_trigger_done["done"] = True
+
+            second_send_success, second_coord_string = PipelineRunner._send_latest_coordinates_from_folder(
+                recipe_name,
+                "ScrewBoxesData2",
+                block_id
+            )
+
+            PipelineRunner.send_screw_start_to_server()
 
             dialog.accept()
             if video_path and os.path.exists(video_path):
-                PipelineRunner._show_video_dialog(video_path=video_path, parent_widget=parent_widget,
-                                                  title=f"Step {step_number}: Screw Video")
+                PipelineRunner._show_video_dialog(
+                    video_path=video_path,
+                    parent_widget=parent_widget,
+                    title="SCREW ASSEMBLY RESULT"
+                )
 
         ok_btn.clicked.connect(on_ok_continue)
+        def on_screw_hand_trigger():
+            try:
+                if screw_trigger_done["done"]:
+                    return
+                print("[SCREW OPERATION] Hand detected in trigger zone!")
+                on_ok_continue()
+            except Exception as e:
+                print(f"[SCREW OPERATION] Trigger error: {e}")
+
+        PipelineRunner.set_orbbec_trigger(orbbec_thread, on_screw_hand_trigger, state="idle")
+
+        def _cleanup_screw_dialog(*_):
+            try:
+                main_page = None
+                for w in QApplication.topLevelWidgets():
+                    if hasattr(w, "main_page"):
+                        main_page = w.main_page
+                        break
+                    if w.__class__.__name__ == "MainPage":
+                        main_page = w
+                        break
+
+                if main_page and hasattr(main_page, "on_orbbec_start_trigger"):
+                    PipelineRunner.set_orbbec_trigger(
+                        orbbec_thread,
+                        main_page.on_orbbec_start_trigger,
+                        state="idle"
+                    )
+                    print("[SCREW OPERATION] Trigger restored to MainPage")
+                else:
+                    PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
+                    print("[SCREW OPERATION] Trigger cleared")
+            except Exception as e:
+                print(f"[SCREW OPERATION] Cleanup trigger error: {e}")
+
+        dialog.finished.connect(_cleanup_screw_dialog)
         btn_row.addWidget(cancel_btn)
         btn_row.addStretch()
         btn_row.addWidget(ok_btn)
@@ -1425,7 +1657,8 @@ class PipelineRunner:
             print(f"Error cleaning completed jobs: {e}")
 
     @staticmethod
-    def _execute_assembly_step_like_dialog(step_num: int, total_steps: int, selection: Dict, parent_widget) -> bool:
+    def _execute_assembly_step_like_dialog(step_num: int, assembly_total: int, pipeline_step: int, pipeline_total: int,
+                                           selection: Dict, parent_widget) -> bool:
         from datetime import datetime
         import os
         import shutil
@@ -1433,6 +1666,10 @@ class PipelineRunner:
         import numpy as np
         from PySide6.QtWidgets import QApplication, QProgressBar
         from PySide6.QtCore import QTimer, QSize
+        from PySide6.QtCore import QUrl
+        from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+        from PySide6.QtMultimediaWidgets import QVideoWidget
+        from camera.orbbec_manager import OrbbecManager
 
         PipelineRunner._init_heartbeat_manager()
         calibration = PipelineRunner._load_calibration(config_manager.current_recipe)
@@ -1490,6 +1727,10 @@ class PipelineRunner:
         filename = f"Image_{timestamp}.bmp"
         new_capture_path = os.path.join(capture_folder, filename)
 
+        # Orbbec manager / shared thread
+        manager = OrbbecManager.get_instance()
+        orbbec_thread = manager.get_thread(recipe_name)
+
         # Find YOLO model
         model_path = None
         class_id = None
@@ -1507,18 +1748,18 @@ class PipelineRunner:
                         if hasattr(temp_model, 'names'):
                             for cid, name in temp_model.names.items():
                                 if product_name.lower() == name.lower():
-                                    class_id = cid;
+                                    class_id = cid
                                     break
                             if class_id is None:
                                 for cid, name in temp_model.names.items():
                                     if product_name.lower() in name.lower() or name.lower() in product_name.lower():
-                                        class_id = cid;
+                                        class_id = cid
                                         break
                             if class_id is None and '_' in product_name:
                                 lp = product_name.split('_')[-1]
                                 for cid, name in temp_model.names.items():
                                     if lp.lower() == name.lower() or lp.lower() in name.lower():
-                                        class_id = cid;
+                                        class_id = cid
                                         break
                         del temp_model
                     except Exception as e:
@@ -1526,7 +1767,7 @@ class PipelineRunner:
 
         # ── CREATE TECH DIALOG ────────────────────────────────────────────
         dialog = QDialog(parent_widget)
-        dialog.setWindowTitle(f"Step {step_num}/{total_steps}: {product_name}")
+        dialog.setWindowTitle(f"Step {step_num}/{pipeline_total}: {product_name}")
         dialog.showFullScreen()
         dialog.setStyleSheet("QDialog { background-color: #030810; }")
 
@@ -1534,31 +1775,27 @@ class PipelineRunner:
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        header_text = f"▶  STEP {step_num}/{total_steps}  —  {product_name}"
         # Tech header bar
         hdr_bar = QWidget()
         hdr_bar.setFixedHeight(80)
         hdr_bar.setStyleSheet("background-color:#050D18;border-bottom:2px solid #00AAFF;")
         hdr_row = QHBoxLayout(hdr_bar)
-        hdr_row.setContentsMargins(14, 0, 14, 0);
+        hdr_row.setContentsMargins(14, 0, 14, 0)
         hdr_row.setSpacing(12)
-        asm_step_badge = QLabel(f"STEP {step_num}/{total_steps}")
+        asm_step_badge = QLabel(f"STEP {pipeline_step}/{pipeline_total}")
         asm_step_badge.setStyleSheet(
             "font-size:16px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:4px 14px;letter-spacing:2px;font-family:Consolas;")
+        asm_step_badge.setFixedHeight(24)
+        asm_step_badge.setContentsMargins(0, 0, 0, 0)
         asm_title = QLabel(product_name.upper())
         asm_title.setStyleSheet(
             "font-size:26px;font-weight:900;color:#FFFFFF;letter-spacing:2px;font-family:Consolas;background:transparent;")
-        model_badge = QLabel("CLASS FILTER ACTIVE" if class_id is not None else "NO CLASS FILTER")
-        _mc = "#00FF88" if class_id is not None else "#1A4A6A"
-        _mb = "#00FF8844" if class_id is not None else "#0E2A40"
-        model_badge.setStyleSheet(
-            f"font-size:14px;color:{_mc};background:#030810;border:1px solid {_mb};padding:4px 12px;letter-spacing:2px;font-family:Consolas;")
-        hdr_row.addWidget(asm_step_badge);
-        hdr_row.addWidget(asm_title);
-        hdr_row.addStretch();
-        hdr_row.addWidget(model_badge)
+        hdr_row.addWidget(asm_step_badge)
+        hdr_row.addWidget(asm_title)
+        hdr_row.addStretch()
         layout.addWidget(hdr_bar)
-        # Cyan separator line — sits on top of everything below
+
+        # Cyan separator line
         sep_line = QWidget()
         sep_line.setFixedHeight(2)
         sep_line.setStyleSheet("background:#00AAFF;")
@@ -1567,7 +1804,7 @@ class PipelineRunner:
         splitter_wrap = QWidget()
         splitter_wrap.setStyleSheet("background:#030810;")
         sw_layout = QVBoxLayout(splitter_wrap)
-        sw_layout.setContentsMargins(0, 0, 0, 0);
+        sw_layout.setContentsMargins(0, 0, 0, 0)
         sw_layout.setSpacing(0)
         splitter = QSplitter(Qt.Horizontal)
         splitter.setStyleSheet("QSplitter::handle { background-color: #0E2A40; width:2px; }")
@@ -1582,16 +1819,16 @@ class PipelineRunner:
         ref_header = QWidget()
         ref_header.setFixedHeight(44)
         ref_header.setStyleSheet("background:#050D18;border-bottom:1px solid #0E2A40;border-right:1px solid #0E2A40;")
-        rh_row = QHBoxLayout(ref_header);
-        rh_row.setContentsMargins(10, 0, 10, 0);
+        rh_row = QHBoxLayout(ref_header)
+        rh_row.setContentsMargins(10, 0, 10, 0)
         rh_row.setSpacing(8)
-        rh_dot = QLabel("●");
+        rh_dot = QLabel("●")
         rh_dot.setStyleSheet("font-size:14px;color:#00AAFF;background:transparent;")
-        rh_lbl = QLabel("PRODUCT IMAGE");
+        rh_lbl = QLabel("PRODUCT IMAGE")
         rh_lbl.setStyleSheet(
             "font-size:16px;font-weight:900;color:#AACCEE;letter-spacing:3px;font-family:Consolas;background:transparent;")
-        rh_row.addWidget(rh_dot);
-        rh_row.addWidget(rh_lbl);
+        rh_row.addWidget(rh_dot)
+        rh_row.addWidget(rh_lbl)
         rh_row.addStretch()
         left_layout.addWidget(ref_header)
 
@@ -1618,16 +1855,16 @@ class PipelineRunner:
         det_panel_hdr = QWidget()
         det_panel_hdr.setFixedHeight(44)
         det_panel_hdr.setStyleSheet("background:#050D18;border-bottom:1px solid #0E2A40;")
-        dph_row = QHBoxLayout(det_panel_hdr);
-        dph_row.setContentsMargins(10, 0, 10, 0);
+        dph_row = QHBoxLayout(det_panel_hdr)
+        dph_row.setContentsMargins(10, 0, 10, 0)
         dph_row.setSpacing(8)
-        dph_dot = QLabel("●");
+        dph_dot = QLabel("●")
         dph_dot.setStyleSheet("font-size:14px;color:#FF3344;background:transparent;")
         detection_header = QLabel("DETECTION RESULT")
         detection_header.setStyleSheet(
             "font-size:16px;font-weight:900;color:#AACCEE;letter-spacing:3px;font-family:Consolas;background:transparent;")
-        dph_row.addWidget(dph_dot);
-        dph_row.addWidget(detection_header);
+        dph_row.addWidget(dph_dot)
+        dph_row.addWidget(detection_header)
         dph_row.addStretch()
         right_layout.addWidget(det_panel_hdr)
 
@@ -1687,21 +1924,22 @@ class PipelineRunner:
         detection_label.setAlignment(Qt.AlignCenter)
         detection_label.setVisible(False)
         detection_label.setStyleSheet("background-color: transparent;")
+        detection_label.setFixedSize(1280, 720)
         detection_container_layout.addWidget(detection_label)
         right_layout.addWidget(detection_container, stretch=1)
 
         # Hidden labels kept for logic compatibility
-        cal_status_label = QLabel();
+        cal_status_label = QLabel()
         cal_status_label.hide()
-        detection_status = QLabel("STATUS: Initializing camera...");
+        detection_status = QLabel("STATUS: Initializing camera...")
         detection_status.hide()
-        detection_result = QLabel("DETECTED: --");
+        detection_result = QLabel("DETECTED: --")
         detection_result.hide()
-        confidence_label = QLabel("CONFIDENCE: --");
+        confidence_label = QLabel("CONFIDENCE: --")
         confidence_label.hide()
-        coord_status_label = QLabel("COORDINATES: Not sent");
+        coord_status_label = QLabel("COORDINATES: Not sent")
         coord_status_label.hide()
-        info_frame = QFrame();
+        info_frame = QFrame()
         info_frame.hide()
 
         splitter.addWidget(left_widget)
@@ -1782,12 +2020,12 @@ class PipelineRunner:
         btn_wrap = QWidget()
         btn_wrap.setFixedHeight(66)
         btn_wrap.setStyleSheet("background:#030810;border-top:1px solid #0E2A40;")
-        bwl = QHBoxLayout(btn_wrap);
-        bwl.setContentsMargins(10, 8, 10, 8);
+        bwl = QHBoxLayout(btn_wrap)
+        bwl.setContentsMargins(10, 8, 10, 8)
         bwl.setSpacing(8)
-        bwl.addWidget(cancel_btn);
-        bwl.addStretch();
-        bwl.addWidget(retry_btn);
+        bwl.addWidget(cancel_btn)
+        bwl.addStretch()
+        bwl.addWidget(retry_btn)
         bwl.addWidget(verify_btn)
         layout.addWidget(btn_wrap)
 
@@ -1813,8 +2051,10 @@ class PipelineRunner:
 
         def has_target_class(detections, target_class_id):
             try:
-                if len(detections.boxes) == 0: return False
-                if target_class_id is None: return len(detections.boxes) > 0
+                if len(detections.boxes) == 0:
+                    return False
+                if target_class_id is None:
+                    return len(detections.boxes) > 0
                 boxes = detections.boxes
                 class_ids = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
                 return any(int(cid) == int(target_class_id) for cid in class_ids)
@@ -1822,7 +2062,8 @@ class PipelineRunner:
                 return False
 
         def update_detection_pixmap(pixmap):
-            if pixmap.isNull(): return
+            if pixmap.isNull():
+                return
             target_size = detection_container.size() - QSize(20, 20)
             if target_size.width() < 100 or target_size.height() < 100:
                 target_size = QSize(700, 450)
@@ -1834,93 +2075,88 @@ class PipelineRunner:
                 f"font-size:16px;font-weight:900;color:{color};letter-spacing:3px;font-family:Consolas;background:transparent;")
             dph_dot.setStyleSheet(f"font-size:14px;color:{color};background:transparent;")
 
-        orbbec_thread = None
-
         def update_orbbec_view(frame):
             if frame is None:
                 return
+
             try:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w = rgb.shape[:2]
-                qimg = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888)
+
+                qimg = QImage(
+                    rgb.data,
+                    w,
+                    h,
+                    rgb.strides[0],
+                    QImage.Format_RGB888
+                ).copy()
+
                 pixmap = QPixmap.fromImage(qimg)
+                if pixmap.isNull():
+                    return
 
-                if not pixmap.isNull():
-                    scaled = pixmap.scaled(
-                        detection_label.size(),
-                        Qt.KeepAspectRatio,
-                        Qt.SmoothTransformation
-                    )
-                    detection_label.setPixmap(scaled)
-                    detection_label.setAlignment(Qt.AlignCenter)
+                # ✅ 直接用 Orbbec 原始 size（最顺）
+                scaled = pixmap.scaled(
+                    1280, 720,
+                    Qt.KeepAspectRatio,
+                    Qt.FastTransformation
+                )
+
+                detection_label.setPixmap(scaled)
+                detection_label.setAlignment(Qt.AlignCenter)
+
             except Exception as e:
-                detection_status.setText(f"❌ Live view error: {str(e)[:60]}")
+                detection_status.setText(f"❌ Live error: {str(e)[:60]}")
 
-        # ========== NEW: Trigger box handler for pipeline start ==========
         def on_pipeline_trigger_from_orbbec():
-            """Called when hand gesture triggers pipeline start"""
             print("[Assembly Step] Pipeline trigger received from hand gesture!")
-
-            # This simulates clicking the VERIFY button
             if verify_btn.isEnabled():
                 QTimer.singleShot(100, verify_btn.click)
             else:
                 print("[Assembly Step] Verify button not enabled, cannot auto-trigger")
 
-        # ================================================================
-
         def start_orbbec_live_view():
             nonlocal orbbec_thread
 
-            if orbbec_thread is not None and orbbec_thread.isRunning():
-                return
-
             try:
-                from camera.orbbec_camera_thread import OrbbecCameraThread
-                orbbec_thread = OrbbecCameraThread()
+                orbbec_thread = manager.get_thread(recipe_name)
+                manager.attach_live_view(update_orbbec_view)
 
-                # Set recipe name for homography
-                orbbec_thread.set_recipe_name(recipe_name)
+                # ✅ Show cached frame immediately so UI does not wait for next frame_signal
+                if (
+                        orbbec_thread is not None
+                        and hasattr(orbbec_thread, "latest_frame")
+                        and orbbec_thread.latest_frame is not None
+                ):
+                    try:
+                        cached_frame = orbbec_thread.latest_frame.copy()
+                        update_orbbec_view(cached_frame)
+                        print("[Assembly Step] ✅ Displayed cached Orbbec frame immediately")
+                    except Exception as e:
+                        print(f"[Assembly Step] ⚠️ Failed to display cached frame: {e}")
 
-                # Enable and configure trigger box
-                orbbec_thread.use_trigger_box = True
-                orbbec_thread.trigger_delay_sec = 1.0
-                orbbec_thread.trigger_fixed_position = {
-                    "relative_x": 0.85,
-                    "relative_y": 0.85,
-                    "size": 120
-                }
+                manager.set_handler(on_pipeline_trigger_from_orbbec)
 
-                # Connect signals
-                orbbec_thread.frame_signal.connect(update_orbbec_view)
-                orbbec_thread.status_signal.connect(lambda msg: detection_status.setText(msg))
-                orbbec_thread.error_signal.connect(lambda msg: detection_status.setText(f"❌ {msg}"))
-
-                # Connect pipeline trigger signal (NEW)
-                orbbec_thread.start_pipeline_signal.connect(on_pipeline_trigger_from_orbbec)
-
-                orbbec_thread.start()
-
-                print("[Assembly Step] Orbbec thread started with trigger box enabled")
-
+                print("[Assembly Step] ✅ Using OrbbecManager")
             except Exception as e:
-                detection_status.setText(f"❌ Failed to start Orbbec: {str(e)[:60]}")
+                print(f"[Assembly Step] ❌ Failed to connect Orbbec: {e}")
+                detection_status.setText(f"❌ Failed to connect Orbbec: {str(e)[:60]}")
 
         def stop_orbbec_live_view():
-            nonlocal orbbec_thread
+            try:
+                manager.clear_boxes()
+            except Exception:
+                pass
 
-            if orbbec_thread is not None:
-                try:
-                    orbbec_thread.clear_external_target_bbox()
-                except Exception:
-                    pass
+            try:
+                manager.detach_live_view(update_orbbec_view)
+            except Exception:
+                pass
 
-                try:
-                    orbbec_thread.stop()
-                except Exception:
-                    pass
-
-                orbbec_thread = None
+            try:
+                manager.set_handler(None)
+            except Exception:
+                pass
 
         def start_detection_capture(status_text="STATUS: Opening camera."):
             nonlocal capture_runner
@@ -1998,12 +2234,13 @@ class PipelineRunner:
                     verify_btn.setEnabled(False)
                     return
 
+                from ultralytics import YOLO
+
                 frame = cv2.imread(new_capture_path)
                 model = YOLO(model_path)
-                results = model(frame, conf=0.25)  # ← REMOVED classes filter!
+                results = model(frame, conf=0.25)
                 detections = results[0]
 
-                # Get ALL predictions
                 all_predictions = []
                 if len(detections.boxes) > 0:
                     boxes = detections.boxes
@@ -2021,29 +2258,19 @@ class PipelineRunner:
 
                 print(f"\n🎯 TARGET PRODUCT NAME: '{product_name}'")
                 print(f"📦 Detected classes: {[p['class_name'] for p in all_predictions]}")
-                print(f"🔍 Lowercase target: '{product_name.lower()}'")
-                print(f"🔍 Lowercase detected: {[p['class_name'].lower() for p in all_predictions]}")
 
-                # ========== NEW: Separate target vs other objects ==========
                 target_predictions = []
                 other_predictions = []
 
-                # Function to clean class names (remove prefixes like "1_", "2_", etc.)
                 def clean_name(name: str) -> str:
-                    """Remove numeric prefixes like '1_', '2_', 'C1.1_' from class names"""
                     import re
-                    # Remove numbers and underscore at start (e.g., "2_PCB" -> "PCB")
                     name = re.sub(r'^\d+_', '', name)
-                    # Remove recipe prefix (e.g., "C1.1_PCB" -> "PCB")
                     name = re.sub(r'^[A-Z0-9\.]+_', '', name)
                     return name.lower().strip()
 
                 for pred in all_predictions:
                     pred_clean = clean_name(pred['class_name'])
                     target_clean = clean_name(product_name)
-
-                    print(
-                        f"🔍 Comparing: '{pred['class_name']}' (clean: '{pred_clean}') vs '{product_name}' (clean: '{target_clean}')")
 
                     if pred_clean == target_clean:
                         target_predictions.append(pred)
@@ -2052,37 +2279,32 @@ class PipelineRunner:
                         other_predictions.append(pred)
                         print(f"   ❌ OTHER")
 
-                # Find best target detection (highest confidence)
                 best_target = None
                 if target_predictions:
                     best_target = max(target_predictions, key=lambda p: p.get('confidence', 0))
 
-                # ========== NEW: Send ALL coordinates to Orbbec ==========
-                if orbbec_thread is not None:
-                    # Clear existing boxes
-                    orbbec_thread.clear_external_target_bbox()
-                    orbbec_thread.clear_all_detection_boxes()  # ← New method
+                try:
+                    best_bbox = best_target.get('bbox', None) if best_target else None
+                    manager.set_boxes(
+                        target=best_bbox,
+                        others=other_predictions if best_target else None
+                    )
 
-                    # Send target box (for alarm)
-                    if best_target:
-                        best_bbox = best_target.get('bbox', None)
-                        if best_bbox:
-                            orbbec_thread.set_external_target_bbox(best_bbox)
-                            print(f"[TARGET] {product_name} at {best_bbox}")
+                    if best_bbox:
+                        print(f"[TARGET] {product_name} at {best_bbox}")
 
-                    # Send ALL other detected objects (for wrong location warning)
-                    if other_predictions:
-                        orbbec_thread.set_all_detection_boxes(other_predictions)
+                    if best_target and other_predictions:
                         for obj in other_predictions:
                             print(f"[OTHER] {obj['class_name']} at {obj['bbox']}")
+                except Exception as e:
+                    print(f"[Orbbec] ❌ box update error: {e}")
 
-                # Check if target was found
                 target_found = best_target is not None
                 target_detected_successfully = target_found
 
-                if not target_found and orbbec_thread is not None:
+                if not target_found and manager.thread is not None:
                     try:
-                        orbbec_thread.clear_external_target_bbox()
+                        manager.clear_boxes()
                     except Exception as e:
                         print(f"❌ Failed to clear Orbbec target bbox: {e}")
 
@@ -2201,14 +2423,13 @@ class PipelineRunner:
 
             cleanup_capture_runner()
 
-            if orbbec_thread is not None:
-                try:
-                    orbbec_thread.clear_external_target_bbox()
-                    # Reset trigger box state for retry
-                    orbbec_thread.trigger_was_triggered = False
-                    orbbec_thread.trigger_enter_time = None
-                except Exception as e:
-                    print(f"❌ Failed to clear Orbbec target bbox on retry: {e}")
+            try:
+                manager.clear_boxes()
+                if manager.thread is not None:
+                    manager.thread.trigger_was_used = False
+                    manager.thread.trigger_enter_time = None
+            except Exception as e:
+                print(f"❌ Failed to clear Orbbec target bbox on retry: {e}")
 
             manual_retry_count += 1
             auto_retry_count = 0
@@ -2223,18 +2444,22 @@ class PipelineRunner:
             start_detection_capture(f"↺ Manual retry. ({manual_retry_count})")
 
         def on_verify():
-            stop_orbbec_live_view()
-            nonlocal captured_image_path, detection_results, output_path, target_detected_successfully
+            print("🔍 [DEBUG] on_verify START")
+
+            nonlocal captured_image_path, detection_results, output_path, target_detected_successfully, orbbec_thread
+
             if not target_detected_successfully:
                 QMessageBox.warning(parent_widget, "⚠️ Target Not Detected",
                                     "Cannot continue because target class was not detected.\nPlease cancel and try again.")
                 return
+
             if captured_image_path and os.path.exists(captured_image_path):
                 selection['pipeline_capture_path'] = captured_image_path
             if output_path and os.path.exists(output_path):
                 selection['pipeline_detection_path'] = output_path
             if detection_results:
                 selection['pipeline_detection_results'] = detection_results
+
             coordinates_sent = False
             coord_string = ""
             try:
@@ -2256,9 +2481,20 @@ class PipelineRunner:
                                     coordinates_sent = True
             except Exception as e:
                 print(f"❌ Error sending box coordinates: {e}")
-            dialog.accept()
 
-            # Show result image
+            try:
+                manager.clear_boxes()
+                if manager.thread is not None:
+                    manager.thread.trigger_was_used = False
+                    manager.thread.trigger_enter_time = None
+            except Exception as e:
+                print(f"⚠️ Error resetting camera state: {e}")
+            print("✅ [DEBUG] Closing main detection dialog")
+            main_dialog_ref = dialog
+            main_dialog_ref.accept()
+
+            QApplication.processEvents()
+
             image_to_show = None
             try:
                 import glob
@@ -2273,8 +2509,8 @@ class PipelineRunner:
                 pass
 
             if image_to_show and os.path.exists(image_to_show):
-                saved_image_dialog = QDialog(parent_widget)
-                saved_image_dialog.setWindowTitle(f"Step {step_num}: Assembly Result")
+                saved_image_dialog = QDialog()
+                saved_image_dialog.setWindowTitle(f"Assembly Result")
                 saved_image_dialog.showFullScreen()
                 saved_image_dialog.setStyleSheet("QDialog { background-color: #060C14; }")
 
@@ -2282,26 +2518,38 @@ class PipelineRunner:
                 saved_layout.setContentsMargins(16, 16, 16, 16)
                 saved_layout.setSpacing(12)
 
-                saved_header = QLabel(f"STEP {step_num}  —  ASSEMBLY RESULT")
-                saved_header.setStyleSheet("""
-                    QLabel {
-                        font-size: 20px; font-weight: 800; color: #FFFFFF;
-                        background-color: #050D18;
-                        border-bottom: 3px solid #00AAFF; border-left: 4px solid #00AAFF;
-                        padding: 16px 20px; letter-spacing: 1px;
-                        font-family: Consolas; border-radius: 0px;
-                    }
+                saved_header_widget = QWidget()
+                saved_header_widget.setFixedHeight(80)
+                saved_header_widget.setStyleSheet("background:#050D18;border-bottom:2px solid #00AAFF;")
+                saved_header_layout = QHBoxLayout(saved_header_widget)
+                saved_header_layout.setContentsMargins(14, 0, 14, 0)
+
+                step_badge = QLabel(f"ASSEMBLY RESULT")
+                step_badge.setStyleSheet("""
+                    font-size: 20px; font-weight: 800; color: #FFFFFF;
+                    letter-spacing: 2px; font-family: Consolas; background: transparent;
                 """)
-                saved_header.setAlignment(Qt.AlignCenter)
-                saved_layout.addWidget(saved_header)
+
+                hand_detection_status = QLabel("✋ HAND DETECTION: WAITING")
+                hand_detection_status.setStyleSheet("""
+                    font-size: 11px; font-weight: 900; color: #FFAA00;
+                    background-color: #1A1000; border: 1px solid #FFAA0044;
+                    padding: 4px 12px; letter-spacing: 1px; font-family: Consolas;
+                """)
+
+                saved_header_layout.addWidget(step_badge)
+                saved_header_layout.addStretch()
+                saved_header_layout.addWidget(hand_detection_status)
+                saved_layout.addWidget(saved_header_widget)
 
                 has_video = uploaded_video_path and os.path.exists(uploaded_video_path)
 
-                if has_video:
-                    from PySide6.QtCore import QUrl
-                    from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-                    from PySide6.QtMultimediaWidgets import QVideoWidget
+                cached_pixmap = None
+                pixmap = QPixmap(image_to_show)
+                if not pixmap.isNull():
+                    cached_pixmap = pixmap.scaled(700, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
+                if has_video:
                     splitter_result = QSplitter(Qt.Horizontal)
                     splitter_result.setHandleWidth(2)
                     splitter_result.setStyleSheet("QSplitter::handle { background-color: #1A3A5C; }")
@@ -2328,10 +2576,8 @@ class PipelineRunner:
                     saved_image_label.setAlignment(Qt.AlignCenter)
                     saved_image_label.setMinimumSize(560, 460)
                     saved_image_label.setStyleSheet("background-color: #030810; border: none;")
-                    pixmap = QPixmap(image_to_show)
-                    if not pixmap.isNull():
-                        saved_image_label.setPixmap(
-                            pixmap.scaled(560, 460, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    if cached_pixmap:
+                        saved_image_label.setPixmap(cached_pixmap)
                     else:
                         saved_image_label.setText("❌ Cannot load image")
                     image_frame_layout.addWidget(saved_image_label, 1)
@@ -2371,32 +2617,34 @@ class PipelineRunner:
                     splitter_result.setSizes([620, 800])
                     saved_layout.addWidget(splitter_result, 1)
 
-                    player = QMediaPlayer(saved_image_dialog)
-                    audio = QAudioOutput(saved_image_dialog)
-                    player.setAudioOutput(audio)
-                    player.setVideoOutput(video_widget)
-                    player.setSource(QUrl.fromLocalFile(uploaded_video_path))
-                    audio.setVolume(0.0)
+                    def load_video_deferred():
+                        player = QMediaPlayer(saved_image_dialog)
+                        audio = QAudioOutput(saved_image_dialog)
+                        player.setAudioOutput(audio)
+                        player.setVideoOutput(video_widget)
+                        player.setSource(QUrl.fromLocalFile(uploaded_video_path))
+                        audio.setVolume(0.0)
 
-                    def loop_uploaded_video(status):
-                        from PySide6.QtMultimedia import QMediaPlayer
-                        if status == QMediaPlayer.EndOfMedia:
-                            player.setPosition(0);
-                            player.play()
+                        def loop_uploaded_video(status):
+                            from PySide6.QtMultimedia import QMediaPlayer
+                            if status == QMediaPlayer.EndOfMedia:
+                                player.setPosition(0)
+                                player.play()
 
-                    player.mediaStatusChanged.connect(loop_uploaded_video)
-                    player.play()
-                    saved_image_dialog.finished.connect(lambda _: player.stop())
+                        player.mediaStatusChanged.connect(loop_uploaded_video)
+                        player.play()
+                        saved_image_dialog.video_player = player
+
+                    QTimer.singleShot(100, load_video_deferred)
+
                 else:
                     saved_image_label = QLabel()
                     saved_image_label.setAlignment(Qt.AlignCenter)
                     saved_image_label.setMinimumHeight(400)
                     saved_image_label.setStyleSheet(
                         "border: 1px solid #1A3A5C; border-left: 3px solid #00AAFF; border-radius: 0px; background-color: #030810; padding: 10px;")
-                    pixmap = QPixmap(image_to_show)
-                    if not pixmap.isNull():
-                        saved_image_label.setPixmap(
-                            pixmap.scaled(700, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    if cached_pixmap:
+                        saved_image_label.setPixmap(cached_pixmap)
                     else:
                         saved_image_label.setText("❌ Cannot load image")
                     saved_layout.addWidget(saved_image_label)
@@ -2408,29 +2656,138 @@ class PipelineRunner:
                     coord_display.setWordWrap(True)
                     saved_layout.addWidget(coord_display)
 
+                btn_container = QWidget()
+                btn_container.setFixedHeight(100)
+                btn_container.setStyleSheet("background: transparent;")
+                btn_layout = QHBoxLayout(btn_container)
+                btn_layout.setContentsMargins(20, 10, 20, 10)
+
                 close_btn = QPushButton("▶  CONTINUE")
-                close_btn.setFixedHeight(58)
+                close_btn.setFixedHeight(66)
                 close_btn.setStyleSheet("""
                     QPushButton {
-                        font-size: 17px; font-weight: 800;
+                        font-size: 20px; font-weight: 800;
                         background-color: #031A10; color: #00FF88;
                         border: 1px solid #0A5030; border-bottom: 5px solid #051008;
                         border-left: 3px solid #00FF88; border-radius: 2px;
-                        min-width: 200px; font-family: Consolas; letter-spacing: 1px;
+                        min-width: 320px; font-family: Consolas; letter-spacing: 2px;
                     }
                     QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
                     QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
                 """)
-                close_btn.clicked.connect(saved_image_dialog.accept)
-                saved_layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+
+                hand_instruction = QLabel("✋ PLACE HAND IN BOTTOM-RIGHT CORNER TO CONTINUE")
+                hand_instruction.setStyleSheet("""
+                    font-size: 14px; color: #FFAA00; font-weight: 800;
+                    font-family: Consolas; letter-spacing: 1px;
+                    background-color: #1A1000; border: 1px solid #FFAA0044;
+                    padding: 8px 20px; border-radius: 2px;
+                """)
+
+                btn_layout.addWidget(hand_instruction)
+                btn_layout.addStretch()
+                btn_layout.addWidget(close_btn)
+                saved_layout.addWidget(btn_container)
+
+                trigger_processed = False
+
+                def on_result_page_hand_trigger():
+                    nonlocal trigger_processed
+                    if trigger_processed:
+                        return
+                    trigger_processed = True
+
+                    print("[ASSEMBLY RESULT] Hand detected in trigger zone!")
+                    hand_detection_status.setText("✓ HAND DETECTED!")
+                    hand_detection_status.setStyleSheet("""
+                        font-size: 11px; font-weight: 900; color: #00FF88;
+                        background-color: #031A10; border: 1px solid #00FF8844;
+                        padding: 4px 12px; letter-spacing: 1px; font-family: Consolas;
+                    """)
+                    hand_instruction.setText("✓ HAND DETECTED! CONTINUING...")
+                    hand_instruction.setStyleSheet("""
+                        font-size: 14px; color: #00FF88; font-weight: 800;
+                        font-family: Consolas; letter-spacing: 1px;
+                        background-color: #031A10; border: 1px solid #00FF8844;
+                        padding: 8px 20px; border-radius: 2px;
+                    """)
+
+                    if close_btn.isEnabled():
+                        QTimer.singleShot(500, close_btn.click)
+
+                try:
+                    manager.detach_live_view(update_orbbec_view)
+                except Exception:
+                    pass
+
+                try:
+                    if parent_widget and hasattr(parent_widget, "ignore_orbbec_start_trigger"):
+                        parent_widget.ignore_orbbec_start_trigger = True
+                        print("[ASSEMBLY RESULT] MainPage start trigger temporarily disabled")
+                except Exception as e:
+                    print(f"[ASSEMBLY RESULT] Failed to disable MainPage start trigger: {e}")
+
+                try:
+                    manager.set_handler(on_result_page_hand_trigger)
+                    print("[ASSEMBLY RESULT] ✅ Reusing camera + trigger OK")
+                except Exception as e:
+                    print(f"❌ Failed to reuse camera thread: {e}")
+
+                def on_continue_clicked():
+                    print("🔘 [DEBUG] CONTINUE button clicked")
+                    try:
+                        manager.set_handler(None)
+                    except Exception:
+                        pass
+
+                    try:
+                        if parent_widget and hasattr(parent_widget, "ignore_orbbec_start_trigger"):
+                            parent_widget.ignore_orbbec_start_trigger = False
+                            print("[ASSEMBLY RESULT] MainPage start trigger restored")
+                    except Exception as e:
+                        print(f"[ASSEMBLY RESULT] Failed to restore MainPage start trigger: {e}")
+
+                    saved_image_dialog.accept()
+
+                close_btn.clicked.connect(on_continue_clicked)
+
+                print("📱 [DEBUG] Showing result page (reusing camera thread)")
                 saved_image_dialog.exec()
+                print("📱 [DEBUG] Result page exec() returned")
             else:
+                print("⚠️ [DEBUG] No image found, continuing without result page")
                 QMessageBox.warning(parent_widget, "⚠️ Image Not Found",
                                     f"No image found in Step {step_num}.\nCapture folder: {capture_folder}")
 
+            print("🔍 [DEBUG] on_verify END")
+
         retry_btn.clicked.connect(on_retry_detection)
         verify_btn.clicked.connect(on_verify)
-        dialog.finished.connect(lambda _: stop_orbbec_live_view())
+
+        def _cleanup_dialog(*_):
+            try:
+                manager.clear_boxes()
+            except Exception:
+                pass
+
+            try:
+                manager.detach_live_view(update_orbbec_view)
+            except Exception:
+                pass
+
+            try:
+                manager.set_handler(None)
+            except Exception:
+                pass
+
+            try:
+                if parent_widget and hasattr(parent_widget, "ignore_orbbec_start_trigger"):
+                    parent_widget.ignore_orbbec_start_trigger = False
+                    print("[ASSEMBLY RESULT] MainPage start trigger restored in cleanup")
+            except Exception as e:
+                print(f"[ASSEMBLY RESULT] Cleanup restore failed: {e}")
+
+        dialog.finished.connect(_cleanup_dialog)
 
         try:
             result = dialog.exec()

@@ -309,6 +309,7 @@ class MainPage(QWidget):
         self.waiting_for_qr_confirm = False  # After QR scanned, waiting for hand confirm
         self.orbbec_thread = None
         self.waiting_for_hand_confirm = False
+        self.ignore_orbbec_start_trigger = False
 
     # ── Theme ──────────────────────────────────────────────────────────────
 
@@ -1057,6 +1058,10 @@ class MainPage(QWidget):
 
     def on_start_pipeline_trigger(self):
         """First hand gesture: Show QR popup"""
+        if getattr(self, "ignore_orbbec_start_trigger", False):
+            print("[MainPage] Start trigger ignored")
+            return
+
         print("[MainPage] 🖐️ Start trigger received - showing QR popup")
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self.show_qr_for_hand_trigger)

@@ -745,42 +745,25 @@ class OrbbecCameraThread(QThread):
                 self.request_new_target = False
             else:
                 self.target_box = None
-
-        with self.target_lock:
-            external_bbox = self.external_target_bbox
-
-        if external_bbox is not None and self.use_external_target:
-            x1, y1, x2, y2 = external_bbox
-            x1 = max(0, min(w - 1, x1))
-            y1 = max(0, min(h - 1, y1))
-            x2 = max(0, min(w - 1, x2))
-            y2 = max(0, min(h - 1, y2))
-
-            if x2 > x1 and y2 > y1:
-                self.target_box = (x1, y1, x2, y2)
-                self.request_new_target = False
         else:
-            if self.target_box is None or self.request_new_target:
-                box_size = self.target_box_size
-                x1 = random.randint(20, max(21, w - box_size - 20))
-                y1 = random.randint(20, max(21, h - box_size - 20))
-                self.target_box = (x1, y1, x1 + box_size, y1 + box_size)
-                self.request_new_target = False
-                self.target_enter_time = None
-                self.warning_active = False
+            # 沒有 detection 就不要 target box
+            self.target_box = None
+            self.request_new_target = False
 
         # Draw target box
-        tx1, ty1, tx2, ty2 = self.target_box
-        cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), (0, 255, 255), 2)
-        cv2.putText(
-            frame,
-            "TARGET",
-            (tx1, max(ty1 - 8, 20)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 255, 255),
-            2
-        )
+        if self.target_box is not None:
+            tx1, ty1, tx2, ty2 = self.target_box
+
+            cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), (0, 255, 255), 2)
+            cv2.putText(
+                frame,
+                "TARGET",
+                (tx1, max(ty1 - 8, 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2
+            )
 
         # ========== HAND DETECTION ==========
         hit_target = False
@@ -863,12 +846,15 @@ class OrbbecCameraThread(QThread):
             )
 
             # Check for target box hit (alarm condition)
-            for lm in smoothed:
-                lx = int(lm[0] * frame.shape[1])
-                ly = int(lm[1] * frame.shape[0])
-                if tx1 <= lx <= tx2 and ty1 <= ly <= ty2:
-                    hit_target = True
-                    break
+            if self.target_box is not None:
+                tx1, ty1, tx2, ty2 = self.target_box
+
+                for lm in smoothed:
+                    lx = int(lm[0] * frame.shape[1])
+                    ly = int(lm[1] * frame.shape[0])
+                    if tx1 <= lx <= tx2 and ty1 <= ly <= ty2:
+                        hit_target = True
+                        break
 
             # Check if hand is inside trigger box
             if self.use_trigger_boxes:
@@ -886,7 +872,8 @@ class OrbbecCameraThread(QThread):
                         ly = int(lm[1] * frame.shape[0])
                         if bx1 <= lx <= bx2 and by1 <= ly <= by2:
                             # Check if this is the target box
-                            if self.target_box:
+                            if self.target_box is not None:
+                                tx1, ty1, tx2, ty2 = self.target_box
                                 if not (abs(bx1 - tx1) < 50 and abs(by1 - ty1) < 50):
                                     hand_in_wrong_location = True
                                     wrong_location_name = class_name
@@ -946,24 +933,19 @@ class OrbbecCameraThread(QThread):
             self.warning_active = False
 
         # ========== WRONG LOCATION FEEDBACK ==========
-        # Check if hand is in wrong location (but not in target)
         if hand_in_wrong_location and not hit_target:
-            # Start timer when hand first enters wrong location
             if self.wrong_location_enter_time is None:
                 self.wrong_location_enter_time = current_time
                 self.status_signal.emit(f"Hand on wrong location: {wrong_location_name}")
                 print(f"[WRONG LOCATION] Timer started for: {wrong_location_name}")
 
-                # ========== SEND "error" ONCE WHEN ENTERING ==========
                 if not self.error_sent:
                     self.send_tcp_message_async("error")
                     self.error_sent = True
                     print(f"📤 [TCP] error (hand entered wrong location: {wrong_location_name})")
-                # ====================================================
 
             elapsed_in_wrong = current_time - self.wrong_location_enter_time
 
-            # Show countdown for wrong location (if delay > 0)
             if self.wrong_location_delay_sec > 0:
                 remain = max(0.0, self.wrong_location_delay_sec - elapsed_in_wrong)
                 cv2.putText(
@@ -976,7 +958,6 @@ class OrbbecCameraThread(QThread):
                     2
                 )
 
-            # Trigger warning sound after delay
             if elapsed_in_wrong >= self.wrong_location_delay_sec:
                 self.play_wrong_location_sound_async()
                 cv2.putText(
@@ -989,16 +970,12 @@ class OrbbecCameraThread(QThread):
                     2
                 )
         else:
-            # ========== HAND LEFT WRONG LOCATION - SEND "clear_error" ==========
             if self.wrong_location_enter_time is not None:
                 self.wrong_location_enter_time = None
-                # Send clear_error only once when leaving
                 if self.error_sent:
                     self.send_tcp_message_async("clear_error")
                     self.error_sent = False
                     print(f"📤 [TCP] clear_error (hand left wrong location)")
-            # ==================================================================
-        # ==========================================================
 
         # ========== DRAW ALL DETECTION BOXES (for wrong location visual) ==========
         if hasattr(self, 'all_detection_boxes') and self.all_detection_boxes:
@@ -1008,37 +985,35 @@ class OrbbecCameraThread(QThread):
                     class_name = box_info['class_name']
                     confidence = box_info['confidence']
 
-                    # Different colors for different objects
                     if 'cover' in class_name.lower():
-                        color = (255, 100, 100)  # Red
+                        color = (255, 100, 100)
                     elif 'base' in class_name.lower():
-                        color = (100, 255, 100)  # Green
+                        color = (100, 255, 100)
                     elif 'pcb' in class_name.lower():
-                        color = (100, 100, 255)  # Blue
+                        color = (100, 100, 255)
                     else:
-                        color = (200, 200, 200)  # Gray
+                        color = (200, 200, 200)
 
-                    # Draw box
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-                    # Draw label
                     label = f"{class_name}: {confidence:.2f}"
-                    cv2.putText(frame, label, (x1, max(y1 - 5, 20)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-        # ========================================================================
+                    cv2.putText(
+                        frame,
+                        label,
+                        (x1, max(y1 - 5, 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        color,
+                        1
+                    )
 
         # ========== TRIGGER BOX LOGIC ==========
         if self.use_trigger_boxes:
-            # Initialize trigger box if needed
             if self.trigger_box is None:
                 self.init_trigger_box(frame.shape)
 
-            # Draw trigger box with current state
             frame = self.draw_trigger_box(frame, hand_in_trigger)
-
-            # Update trigger state machine
             self.update_trigger_logic(hand_in_trigger, current_time)
-        # =======================================
 
         return frame
 
@@ -1119,35 +1094,35 @@ class OrbbecCameraThread(QThread):
                 elapsed = time.perf_counter() - self.start_timestamp
                 live_fps = frame_count / elapsed if elapsed > 0 else 0.0
 
-                cv2.putText(
-                    display_frame,
-                    "Source: Orbbec SDK",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 255),
-                    2
-                )
-
-                cv2.putText(
-                    display_frame,
-                    f"FPS: {live_fps:.1f}",
-                    (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2
-                )
-
-                cv2.putText(
-                    display_frame,
-                    "Press R = new target | C = capture",
-                    (10, 90),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2
-                )
+                # cv2.putText(
+                #     display_frame,
+                #     "Source: Orbbec SDK",
+                #     (10, 30),
+                #     cv2.FONT_HERSHEY_SIMPLEX,
+                #     0.7,
+                #     (0, 255, 255),
+                #     2
+                # )
+                #
+                # cv2.putText(
+                #     display_frame,
+                #     f"FPS: {live_fps:.1f}",
+                #     (10, 60),
+                #     cv2.FONT_HERSHEY_SIMPLEX,
+                #     0.6,
+                #     (0, 255, 255),
+                #     2
+                # )
+                #
+                # cv2.putText(
+                #     display_frame,
+                #     "Press R = new target | C = capture",
+                #     (10, 90),
+                #     cv2.FONT_HERSHEY_SIMPLEX,
+                #     0.6,
+                #     (0, 255, 255),
+                #     2
+                # )
 
                 if self.request_capture and self.latest_frame is not None:
                     filename = f"capture_{self.capture_index:03d}.png"

@@ -2034,8 +2034,8 @@ class CornerMonitor(tk.Toplevel):
         h = self._exph() if not self._collapsed else 44
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        x = (screen_width - w) // 2
-        y = (screen_height - h) // 2 + 130
+        x = (screen_width - w) - 150
+        y = (screen_height - h) // 2
         self.geometry(f"{w}x{h}+{x}+{y}")
     def _sd(self, e): self._drag_x = e.x; self._drag_y = e.y
     def _dd(self, e): self.geometry(f"+{self.winfo_x()+e.x-self._drag_x}+{self.winfo_y()+e.y-self._drag_y}")
