@@ -917,47 +917,94 @@ class EditFlowPage(QWidget):
         if not hasattr(screw_block, 'block_id') or not screw_block.block_id:
             self.assign_block_id(screw_block)
 
+        existing_config = {}
+        if hasattr(screw_block, 'config') and isinstance(screw_block.config, dict):
+            existing_config = screw_block.config.copy()
+
         dialog = ScrewDialog(
-            parent=self,
+            parent=None,
             block_id=str(screw_block.block_id),
             block_name=f"Block_{screw_block.block_id}",
-            initial_config=screw_block.config if isinstance(getattr(screw_block, "config", None), dict) else None
+            initial_config=existing_config
         )
 
-        result = dialog.exec()
-        print(f"DEBUG dialog result for Block_{screw_block.block_id} = {result}")
+        dialog.setWindowTitle(f"Configure Screw Block {screw_block.block_id}")
+        dialog.setWindowFlags(
+            Qt.Window |
+            Qt.CustomizeWindowHint |
+            Qt.WindowTitleHint |
+            Qt.WindowMinMaxButtonsHint |
+            Qt.WindowCloseButtonHint
+        )
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
 
-        if result == QDialog.Accepted:
-            new_config = dialog.get_config()
-            print(f"DEBUG new_config for Block_{screw_block.block_id} = {new_config}")
+        def on_finished(result):
+            try:
+                print(f"DEBUG dialog result for Block_{screw_block.block_id} = {result}")
 
-            screw_block.config = new_config
-            print(f"DEBUG assigned config to screw_block {screw_block.block_id}: {screw_block.config}")
+                if result != QDialog.Accepted:
+                    print(f"DEBUG screw config cancelled for Block_{screw_block.block_id}")
+                    return
 
-            # 更新文字显示
-            screw_count = new_config.get("count", "")
-            screw_type = new_config.get("type", "")
-            if hasattr(screw_block, "text"):
-                if screw_count and screw_type:
-                    screw_block.text.setPlainText(
-                        f"Screw (Block {screw_block.block_id}, {screw_count}x {screw_type})"
-                    )
+                if hasattr(dialog, "get_config"):
+                    new_config = dialog.get_config()
+                elif hasattr(dialog, "config_data") and isinstance(dialog.config_data, dict):
+                    new_config = dialog.config_data
                 else:
-                    screw_block.text.setPlainText(f"Screw (Block {screw_block.block_id})")
+                    new_config = existing_config
 
-                text_rect = screw_block.text.boundingRect()
-                text_x = (screw_block.block_width - text_rect.width()) / 2
-                text_y = (screw_block.block_height - text_rect.height()) / 2
-                screw_block.text.setPos(text_x, text_y)
+                if not isinstance(new_config, dict):
+                    new_config = {}
 
-            self.save_flow()
-            return True
+                new_config["block_id"] = str(screw_block.block_id)
+                new_config["block_name"] = f"Block_{screw_block.block_id}"
 
-        print(f"DEBUG screw config cancelled for Block_{screw_block.block_id}")
-        return False
+                screw_block.config = new_config
+                print(f"DEBUG assigned config to screw_block {screw_block.block_id}: {screw_block.config}")
+
+                screw_count = new_config.get("count", "")
+                screw_type = new_config.get("type", "")
+
+                if hasattr(screw_block, "text"):
+                    if screw_count and screw_type:
+                        screw_block.text.setPlainText(
+                            f"Screw (Block {screw_block.block_id}, {screw_count}x {screw_type})"
+                        )
+                    else:
+                        screw_block.text.setPlainText(f"Screw (Block {screw_block.block_id})")
+
+                    text_rect = screw_block.text.boundingRect()
+                    text_x = (screw_block.block_width - text_rect.width()) / 2
+                    text_y = (screw_block.block_height - text_rect.height()) / 2
+                    screw_block.text.setPos(text_x, text_y)
+
+                self.save_flow()
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "Error", f"Failed to save screw config:\n\n{str(e)}")
+
+        dialog.finished.connect(on_finished)
+
+        if not hasattr(self, "_open_screw_dialogs"):
+            self._open_screw_dialogs = []
+        self._open_screw_dialogs.append(dialog)
+
+        dialog.destroyed.connect(
+            lambda *_: self._open_screw_dialogs.remove(dialog)
+            if hasattr(self, "_open_screw_dialogs") and dialog in self._open_screw_dialogs
+            else None
+        )
+
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def configure_assembly_block(self, assembly_block):
-        """Open AssemblyDialog for a specific block"""
+        """Open AssemblyDialog for a specific block (NON-MODAL)"""
         print(f"DEBUG configure_assembly_block -> object={id(assembly_block)}, "
               f"name={getattr(assembly_block, 'name', None)}, "
               f"block_id={getattr(assembly_block, 'block_id', None)}")
@@ -972,61 +1019,88 @@ class EditFlowPage(QWidget):
             existing_data = assembly_block.config.copy()
 
         dialog = AssemblyDialog(
-            parent=self,
+            parent=None,
             initial_config=existing_data,
             block_id=str(assembly_block.block_id),
             block_name=f"Block_{assembly_block.block_id}"
         )
 
         dialog.setWindowTitle(f"Configure Assembly Block {assembly_block.block_id}")
+        dialog.setWindowFlags(
+            Qt.Window |
+            Qt.CustomizeWindowHint |
+            Qt.WindowTitleHint |
+            Qt.WindowMinMaxButtonsHint |
+            Qt.WindowCloseButtonHint
+        )
+        dialog.setWindowModality(Qt.NonModal)
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
 
-        if dialog.exec() == QDialog.Accepted:
-            # 统一从 dialog 取数据
-            if hasattr(dialog, "get_config"):
-                new_data = dialog.get_config()
-            elif hasattr(dialog, "assembly_data"):
-                new_data = dialog.assembly_data
-            else:
-                new_data = existing_data
+        def on_finished(result):
+            try:
+                if result != QDialog.Accepted:
+                    print(f"DEBUG assembly config cancelled for Block_{assembly_block.block_id}")
+                    return
 
-            if not isinstance(new_data, dict):
-                new_data = {}
-
-            new_data["block_id"] = str(assembly_block.block_id)
-            new_data["block_name"] = f"Block_{assembly_block.block_id}"
-
-            assembly_block.assembly_data = new_data
-            assembly_block.config = new_data
-
-            total_steps = int(new_data.get("total_steps", 0))
-
-            if hasattr(assembly_block, "text"):
-                if total_steps > 0:
-                    assembly_block.text.setPlainText(
-                        f"Assembly (Block {assembly_block.block_id}, {total_steps} steps)"
-                    )
+                if hasattr(dialog, "get_config"):
+                    new_data = dialog.get_config()
+                elif hasattr(dialog, "assembly_data"):
+                    new_data = dialog.assembly_data
                 else:
-                    assembly_block.text.setPlainText(
-                        f"Assembly (Block {assembly_block.block_id})"
-                    )
+                    new_data = existing_data
 
-                text_rect = assembly_block.text.boundingRect()
-                text_x = (assembly_block.block_width - text_rect.width()) / 2
-                text_y = (assembly_block.block_height - text_rect.height()) / 2
-                assembly_block.text.setPos(text_x, text_y)
+                if not isinstance(new_data, dict):
+                    new_data = {}
 
-            self.save_flow()
-            self.update_assembly_block_displays()
+                new_data["block_id"] = str(assembly_block.block_id)
+                new_data["block_name"] = f"Block_{assembly_block.block_id}"
 
-            QMessageBox.information(
-                self,
-                "✅ Configuration Saved",
-                f"Assembly block {assembly_block.block_id} configured successfully."
-            )
-            return True
+                assembly_block.assembly_data = new_data
+                assembly_block.config = new_data
 
-        print("Assembly configuration cancelled")
-        return False
+                total_steps = int(new_data.get("total_steps", 0))
+
+                if hasattr(assembly_block, "text"):
+                    if total_steps > 0:
+                        assembly_block.text.setPlainText(
+                            f"Assembly (Block {assembly_block.block_id}, {total_steps} steps)"
+                        )
+                    else:
+                        assembly_block.text.setPlainText(
+                            f"Assembly (Block {assembly_block.block_id})"
+                        )
+
+                    text_rect = assembly_block.text.boundingRect()
+                    text_x = (assembly_block.block_width - text_rect.width()) / 2
+                    text_y = (assembly_block.block_height - text_rect.height()) / 2
+                    assembly_block.text.setPos(text_x, text_y)
+
+                self.save_flow()
+                self.update_assembly_block_displays()
+
+                print(f"DEBUG assembly config saved for Block_{assembly_block.block_id}: {new_data}")
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "Error", f"Failed to save assembly config:\n\n{str(e)}")
+
+        dialog.finished.connect(on_finished)
+
+        if not hasattr(self, "_open_assembly_dialogs"):
+            self._open_assembly_dialogs = []
+        self._open_assembly_dialogs.append(dialog)
+
+        dialog.destroyed.connect(
+            lambda *_: self._open_assembly_dialogs.remove(dialog)
+            if hasattr(self, "_open_assembly_dialogs") and dialog in self._open_assembly_dialogs
+            else None
+        )
+
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def auto_save_assembly_config(self, assembly_block):
         """Auto-save assembly block configuration to JSON file"""

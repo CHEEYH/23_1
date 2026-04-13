@@ -1165,23 +1165,40 @@ class MainWindow(QMainWindow):
                 self.image_boxes[self.image_path] = self.viewer.boxes.copy()
 
     def closeEvent(self, event):
-        """Handle window close event - DON'T close the Heartbeat connection"""
-        self.save_current()
+        """Clean up resources properly to prevent crash"""
+        print("🛑 MainWindow closing - cleaning resources")
 
-        # Disconnect signals but don't close the heartbeat manager
-        if self.heartbeat_manager:
-            try:
-                self.heartbeat_manager.connection_status_changed.disconnect(self.on_heartbeat_status_changed)
-                print("🔌 Disconnected from Heartbeat Manager signals")
-            except:
-                pass
+        try:
+            # 🧨 1. STOP TIMER（最关键）
+            if hasattr(self, "box_tracker_timer") and self.box_tracker_timer:
+                self.box_tracker_timer.stop()
+                self.box_tracker_timer.deleteLater()
+                self.box_tracker_timer = None
+                print("✅ Timer stopped")
 
-        # Clear references
-        self.heartbeat_manager = None
-        self.tcp_connected = False
+            # 🧨 2. 停 camera thread（如果有）
+            if hasattr(self, "capture_worker") and self.capture_worker:
+                try:
+                    self.capture_worker.quit()
+                    self.capture_worker.wait()
+                except:
+                    pass
+                self.capture_worker = None
+                print("✅ Capture worker stopped")
 
-        print("✅ MainWindow closed - Heartbeat Manager connection preserved")
-        event.accept()
+            # 🧨 3. heartbeat disconnect signal
+            if hasattr(self, "heartbeat_manager") and self.heartbeat_manager:
+                try:
+                    self.heartbeat_manager.connection_status_changed.disconnect()
+                except:
+                    pass
+
+            print("✅ Cleanup done")
+
+        except Exception as e:
+            print(f"❌ Cleanup error: {e}")
+
+        super().closeEvent(event)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
