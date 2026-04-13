@@ -50,8 +50,12 @@ class OrbbecCameraThread(QThread):
     frame_signal = Signal(np.ndarray)
     error_signal = Signal(str)
     status_signal = Signal(str)
+
     start_pipeline_signal = Signal()  # First trigger (show QR popup)
     confirm_qr_signal = Signal()  # Second trigger (confirm QR)
+
+    trigger_continue_signal = Signal()  # Hold 3s
+    trigger_stop_signal = Signal()  # Hold 5s
 
     def __init__(self):
         super().__init__()
@@ -105,10 +109,16 @@ class OrbbecCameraThread(QThread):
         }
 
         # State machine
-        self.trigger_state = "idle"  # idle, waiting_qr, confirmed
+        self.trigger_state = "idle"  # idle, waiting_qr, confirmed, missing_decision
         self.trigger_enter_time = None
         self.trigger_delay_sec = 1.0
         self.trigger_was_used = False  # Prevent re-trigger in same state
+
+        # Missing-object special mode
+        self.trigger_mode = "normal"  # normal / missing_decision
+        self.trigger_continue_delay_sec = 3.0
+        self.trigger_stop_delay_sec = 5.0
+        self.trigger_last_stage = None
 
         # Visual colors for different states
         self.trigger_colors = {
@@ -232,6 +242,20 @@ class OrbbecCameraThread(QThread):
         self.trigger_was_used = False
         print(f"[Orbbec] Trigger state changed to: {state}")
 
+    def set_trigger_mode(self, mode="normal"):
+        """Change trigger behavior mode."""
+        self.trigger_mode = mode
+        self.trigger_enter_time = None
+        self.trigger_was_used = False
+        self.trigger_last_stage = None
+        print(f"[Orbbec] Trigger mode changed to: {mode}")
+
+    def reset_trigger_progress(self):
+        """Reset current hold progress."""
+        self.trigger_enter_time = None
+        self.trigger_was_used = False
+        self.trigger_last_stage = None
+
     def check_hand_in_trigger_box(self, hand_landmarks_smoothed, frame_shape):
         """Check if hand is inside trigger box"""
         if self.trigger_box is None:
@@ -260,22 +284,22 @@ class OrbbecCameraThread(QThread):
         x1, y1, x2, y2 = self.trigger_box
         color = self.trigger_colors.get(self.trigger_state, (255, 165, 0))
 
-        # Different labels based on state
-        labels = {
-            "idle": "HAND HERE TO START",
-            "waiting_qr": "SCAN QR THEN HOLD HERE",
-            "confirmed": "✓ CONFIRMED - RUNNING"
-        }
-        label = labels.get(self.trigger_state, "TRIGGER BOX")
+        if self.trigger_mode == "missing_decision":
+            label = "HOLD 3S=CONTINUE / 5S=STOP"
+            color = (0, 255, 255) if hand_inside else (255, 165, 0)
+        else:
+            labels = {
+                "idle": "HAND HERE TO START",
+                "waiting_qr": "SCAN QR THEN HOLD HERE",
+                "confirmed": "✓ CONFIRMED - RUNNING"
+            }
+            label = labels.get(self.trigger_state, "TRIGGER BOX")
 
-        # Determine if we should show countdown
         show_countdown = hand_inside and not self.trigger_was_used and self.trigger_enter_time is not None
 
-        # Draw box with thickness based on state
         thickness = 4 if hand_inside else 3
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
-        # Draw corner markers for better visibility
         corner_len = 20
         cv2.line(frame, (x1, y1), (x1 + corner_len, y1), color, 3)
         cv2.line(frame, (x1, y1), (x1, y1 + corner_len), color, 3)
@@ -286,90 +310,161 @@ class OrbbecCameraThread(QThread):
         cv2.line(frame, (x2, y2), (x2 - corner_len, y2), color, 3)
         cv2.line(frame, (x2, y2), (x2, y2 - corner_len), color, 3)
 
-        # Label with background for readability
-        label_x = x1 + (x2 - x1) // 2 - 80
+        label_x = x1 + (x2 - x1) // 2 - 120
         label_y = max(y1 - 10, 25)
 
-        # Draw text background
         (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-        cv2.rectangle(frame,
-                      (label_x - 5, label_y - text_h - 3),
-                      (label_x + text_w + 5, label_y + 5),
-                      (0, 0, 0, 0.6), -1)
-
+        cv2.rectangle(
+            frame,
+            (label_x - 5, label_y - text_h - 3),
+            (label_x + text_w + 5, label_y + 5),
+            (0, 0, 0),
+            -1
+        )
         cv2.putText(frame, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
-        # Show countdown if hand is inside and not yet triggered
         if show_countdown:
-            # ========== 修复这一行 ==========
             elapsed = time.perf_counter() - self.trigger_enter_time
-            # ================================
-            if elapsed < self.trigger_delay_sec:
-                remain = self.trigger_delay_sec - elapsed
 
-                # Draw countdown circle
+            if self.trigger_mode == "missing_decision":
                 center_x = x1 + (x2 - x1) // 2
                 center_y = y2 + 25
                 radius = 20
 
-                # Background circle
-                cv2.circle(frame, (center_x, center_y), radius, (50, 50, 50), -1)
-                cv2.circle(frame, (center_x, center_y), radius, color, 2)
+                # 3秒 Continue 提示
+                if elapsed < self.trigger_continue_delay_sec:
+                    remain = self.trigger_continue_delay_sec - elapsed
+                    progress = elapsed / self.trigger_continue_delay_sec
 
-                # Progress arc
-                angle = int(360 * (elapsed / self.trigger_delay_sec))
-                cv2.ellipse(frame, (center_x, center_y), (radius - 3, radius - 3), 90, 0, angle, color, 3)
+                    cv2.circle(frame, (center_x, center_y), radius, (50, 50, 50), -1)
+                    cv2.circle(frame, (center_x, center_y), radius, (0, 255, 255), 2)
 
-                # Text
-                cv2.putText(frame, f"{int(remain)}", (center_x - 12, center_y + 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    angle = int(360 * progress)
+                    cv2.ellipse(frame, (center_x, center_y), (radius - 3, radius - 3), 90, 0, angle, (0, 255, 255), 3)
 
-                # Progress bar at bottom of box
-                progress = elapsed / self.trigger_delay_sec
-                bar_width = int((x2 - x1) * progress)
-                cv2.rectangle(frame, (x1, y2 + 5), (x1 + bar_width, y2 + 12), (0, 255, 0), -1)
-                cv2.rectangle(frame, (x1, y2 + 5), (x2, y2 + 12), (100, 100, 100), 1)
+                    cv2.putText(frame, f"{max(1, int(math.ceil(remain)))}",
+                                (center_x - 10, center_y + 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                    cv2.putText(frame, "CONTINUE",
+                                (x1 - 5, y2 + 55),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+                # 3~5秒 Stop 提示
+                elif elapsed < self.trigger_stop_delay_sec:
+                    remain = self.trigger_stop_delay_sec - elapsed
+                    progress = (elapsed - self.trigger_continue_delay_sec) / (
+                            self.trigger_stop_delay_sec - self.trigger_continue_delay_sec
+                    )
+
+                    cv2.circle(frame, (center_x, center_y), radius, (50, 50, 50), -1)
+                    cv2.circle(frame, (center_x, center_y), radius, (0, 0, 255), 2)
+
+                    angle = int(360 * progress)
+                    cv2.ellipse(frame, (center_x, center_y), (radius - 3, radius - 3), 90, 0, angle, (0, 0, 255), 3)
+
+                    cv2.putText(frame, f"{max(1, int(math.ceil(remain)))}",
+                                (center_x - 10, center_y + 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                    cv2.putText(frame, "STOP",
+                                (x1 + 20, y2 + 55),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+            else:
+                if elapsed < self.trigger_delay_sec:
+                    remain = self.trigger_delay_sec - elapsed
+
+                    center_x = x1 + (x2 - x1) // 2
+                    center_y = y2 + 25
+                    radius = 20
+
+                    cv2.circle(frame, (center_x, center_y), radius, (50, 50, 50), -1)
+                    cv2.circle(frame, (center_x, center_y), radius, color, 2)
+
+                    angle = int(360 * (elapsed / self.trigger_delay_sec))
+                    cv2.ellipse(frame, (center_x, center_y), (radius - 3, radius - 3), 90, 0, angle, color, 3)
+
+                    cv2.putText(frame, f"{int(remain)}", (center_x - 12, center_y + 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                    progress = elapsed / self.trigger_delay_sec
+                    bar_width = int((x2 - x1) * progress)
+                    cv2.rectangle(frame, (x1, y2 + 5), (x1 + bar_width, y2 + 12), (0, 255, 0), -1)
+                    cv2.rectangle(frame, (x1, y2 + 5), (x2, y2 + 12), (100, 100, 100), 1)
 
         return frame
 
     # Add this method to be called from draw_hands_and_target
     def update_trigger_logic(self, hand_in_box, current_time):
-        """Handle trigger state machine for single box with two states"""
+        """Handle trigger state machine"""
         if not self.use_trigger_boxes:
             return
 
-        # Don't process if already confirmed (final state)
         if self.trigger_state == "confirmed":
             return
 
         if hand_in_box and not self.trigger_was_used:
             if self.trigger_enter_time is None:
                 self.trigger_enter_time = current_time
+                self.trigger_last_stage = None
                 self.status_signal.emit(f"Hand in trigger box - holding to {self.trigger_state}")
 
             elapsed = current_time - self.trigger_enter_time
 
+            # ===== Missing decision mode: 3s continue, 5s stop =====
+            if self.trigger_mode == "missing_decision":
+                if elapsed >= self.trigger_stop_delay_sec:
+                    self.trigger_was_used = True
+                    self.trigger_enter_time = None
+                    self.trigger_last_stage = "stop"
+                    print("[Orbbec] 🖐️ Hold 5s - STOP")
+                    self.status_signal.emit("Hold 5s detected - stopping pipeline")
+                    self.trigger_stop_signal.emit()
+                    return
+
+                elif elapsed >= self.trigger_continue_delay_sec:
+                    if self.trigger_last_stage != "continue_ready":
+                        self.trigger_last_stage = "continue_ready"
+                        self.status_signal.emit("Hold 3s reached - release now to continue")
+
+                return
+
+            # ===== Normal mode =====
             if elapsed >= self.trigger_delay_sec:
                 self.trigger_was_used = True
                 self.trigger_enter_time = None
 
                 if self.trigger_state == "idle":
-                    # First trigger: start pipeline (show QR)
                     print("[Orbbec] 🖐️ First trigger - Starting pipeline (QR popup)")
                     self.status_signal.emit("Triggered! Opening QR scanner...")
                     self.start_pipeline_signal.emit()
 
                 elif self.trigger_state == "waiting_qr":
-                    # Second trigger: confirm QR and run pipeline
                     print("[Orbbec] 🖐️ Second trigger - Confirming QR and running pipeline")
                     self.status_signal.emit("QR confirmed! Starting assembly...")
                     self.confirm_qr_signal.emit()
+
         else:
-            # Reset if hand leaves before triggering
-            if not hand_in_box:
-                if self.trigger_enter_time is not None:
-                    self.status_signal.emit("Hand left trigger box - cancelled")
-                self.trigger_enter_time = None
+            # Hand left box
+            if self.trigger_enter_time is not None:
+                elapsed = current_time - self.trigger_enter_time
+
+                if self.trigger_mode == "missing_decision":
+                    # release after >=3s and <5s => continue
+                    if self.trigger_continue_delay_sec <= elapsed < self.trigger_stop_delay_sec and not self.trigger_was_used:
+                        self.trigger_was_used = True
+                        self.trigger_enter_time = None
+                        self.trigger_last_stage = "continue"
+                        print("[Orbbec] 🖐️ Released after 3s - CONTINUE")
+                        self.status_signal.emit("Released after 3s - continuing pipeline")
+                        self.trigger_continue_signal.emit()
+                        return
+
+                self.status_signal.emit("Hand left trigger box - cancelled")
+
+            self.trigger_enter_time = None
+            self.trigger_last_stage = None
 
     def set_trigger_box_position(self, relative_x=0.85, relative_y=0.85, size=120):
         """

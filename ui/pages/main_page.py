@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QApplication, QDialog, QTextEdit, QListWidget, QSizePolicy
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
-from PySide6.QtGui import QFont, QPalette, QColor
+from PySide6.QtGui import QFont, QPalette, QColor, QPainter, QPen
 
 from config_manager import config_manager
 from ui.components.pipeline_runner import PipelineRunner
@@ -255,6 +255,66 @@ class QRScanDialog(QDialog):
         bl.addLayout(btn_row)
         root.addWidget(body)
 
+class HoldProgressRing(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(220, 220)
+        self.elapsed = 0.0
+        self.mode = "waiting"   # waiting / continue / stop / triggered
+        self.top_text = "WAITING"
+        self.bottom_text = "FOR HAND"
+
+    def set_state(self, elapsed: float, mode: str, top_text: str, bottom_text: str):
+        self.elapsed = max(0.0, elapsed)
+        self.mode = mode
+        self.top_text = top_text
+        self.bottom_text = bottom_text
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect().adjusted(12, 12, -12, -12)
+
+        # Background ring
+        bg_pen = QPen(QColor("#1E2A36"), 12)
+        painter.setPen(bg_pen)
+        painter.drawArc(rect, 0, 360 * 16)
+
+        # Foreground ring
+        progress = 0.0
+        color = QColor("#00AAFF")
+
+        if self.mode == "continue":
+            progress = min(self.elapsed / 3.0, 1.0)
+            color = QColor("#00E5FF")
+        elif self.mode == "stop":
+            progress = min((self.elapsed - 3.0) / 2.0, 1.0)
+            color = QColor("#FF3344")
+        elif self.mode == "triggered":
+            progress = 1.0
+            color = QColor("#FF3344")
+        else:
+            progress = 0.0
+            color = QColor("#6699BB")
+
+        fg_pen = QPen(color, 12)
+        painter.setPen(fg_pen)
+        # Start from top (90 deg), clockwise negative
+        painter.drawArc(rect, 90 * 16, int(-360 * progress * 16))
+
+        # Center text
+        painter.setPen(QColor("#FFFFFF"))
+
+        font1 = QFont("Consolas", 18, QFont.Bold)
+        painter.setFont(font1)
+        painter.drawText(self.rect().adjusted(0, 55, 0, 0), Qt.AlignHCenter, self.top_text)
+
+        font2 = QFont("Consolas", 15, QFont.Bold)
+        painter.setFont(font2)
+        painter.drawText(self.rect().adjusted(0, 105, 0, 0), Qt.AlignHCenter, self.bottom_text)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main Page
@@ -310,6 +370,9 @@ class MainPage(QWidget):
         self.orbbec_thread = None
         self.waiting_for_hand_confirm = False
         self.ignore_orbbec_start_trigger = False
+
+        self.precheck_missing_dialog = None
+        self.precheck_missing_hand_active = False
 
     # ── Theme ──────────────────────────────────────────────────────────────
 
@@ -1047,18 +1110,42 @@ class MainPage(QWidget):
         """Connect to Orbbec camera thread's trigger signals"""
         self.orbbec_thread = orbbec_thread
         if orbbec_thread:
-            # Connect both signals
+            try:
+                orbbec_thread.start_pipeline_signal.disconnect()
+            except Exception:
+                pass
+
+            try:
+                orbbec_thread.confirm_qr_signal.disconnect()
+            except Exception:
+                pass
+
+            try:
+                orbbec_thread.trigger_continue_signal.disconnect()
+            except Exception:
+                pass
+
+            try:
+                orbbec_thread.trigger_stop_signal.disconnect()
+            except Exception:
+                pass
+
             orbbec_thread.start_pipeline_signal.connect(self.on_start_pipeline_trigger)
             orbbec_thread.confirm_qr_signal.connect(self.on_confirm_qr_trigger)
+            orbbec_thread.trigger_continue_signal.connect(self.on_precheck_missing_continue_trigger)
+            orbbec_thread.trigger_stop_signal.connect(self.on_precheck_missing_stop_trigger)
+
             print("[MainPage] ✅ Connected to Orbbec trigger signals")
 
-            # Set initial state
             orbbec_thread.set_trigger_state("idle")
+            if hasattr(orbbec_thread, "set_trigger_mode"):
+                orbbec_thread.set_trigger_mode("normal")
+            if hasattr(orbbec_thread, "reset_trigger_progress"):
+                orbbec_thread.reset_trigger_progress()
             orbbec_thread.use_trigger_boxes = True
 
     def on_start_pipeline_trigger(self):
-        """First hand gesture: Show QR popup"""
-        if getattr(self, "ignore_orbbec_start_trigger", False):
+        if self.ignore_orbbec_start_trigger:
             print("[MainPage] Start trigger ignored")
             return
 
@@ -1198,6 +1285,459 @@ class MainPage(QWidget):
 
         print("[MainPage] 🚀 Starting pipeline via hand gesture confirmation.")
         QTimer.singleShot(0, self.start_pipeline_precheck)
+
+    def _restore_main_orbbec_mode(self):
+        if not self.orbbec_thread:
+            return
+
+        try:
+            self.orbbec_thread.set_trigger_mode("normal")
+        except Exception:
+            pass
+
+        try:
+            self.orbbec_thread.reset_trigger_progress()
+        except Exception:
+            pass
+
+        self.ignore_orbbec_start_trigger = False
+        self.precheck_missing_hand_active = False
+
+    def on_precheck_missing_continue_trigger(self):
+        if not self.precheck_missing_hand_active:
+            return
+
+        print("[MainPage] 🖐️ Missing-object trigger CONTINUE")
+
+        self.precheck_missing_hand_active = False
+        self.pending_run_after_precheck = False
+
+        if self.precheck_missing_dialog:
+            try:
+                self.precheck_missing_dialog.accept()
+            except Exception:
+                pass
+            self.precheck_missing_dialog = None
+
+        if self.current_recipe and self.current_job_title:
+            self.machine_status.setText(
+                f"AI CHECK OVERRIDE  ·  {self.current_recipe}  ·  {self.current_job_title}"
+            )
+        elif self.current_recipe:
+            self.machine_status.setText(f"AI CHECK OVERRIDE  ·  {self.current_recipe}")
+        else:
+            self.machine_status.setText("AI CHECK OVERRIDE")
+
+        self._restore_main_orbbec_mode()
+        QTimer.singleShot(0, self.run_pipeline_after_precheck)
+
+    def on_precheck_missing_stop_trigger(self):
+        if not self.precheck_missing_hand_active:
+            return
+
+        print("[MainPage] 🖐️ Missing-object trigger STOP")
+
+        self.precheck_missing_hand_active = False
+        self.pending_run_after_precheck = False
+
+        if self.precheck_missing_dialog:
+            try:
+                self.precheck_missing_dialog.reject()
+            except Exception:
+                pass
+            self.precheck_missing_dialog = None
+
+        if self.current_recipe and self.current_job_title:
+            self.machine_status.setText(f"READY  ·  {self.current_recipe}  ·  {self.current_job_title}")
+        elif self.current_recipe:
+            self.machine_status.setText(f"READY  ·  {self.current_recipe}")
+        else:
+            self.machine_status.setText("READY")
+
+        self._restore_main_orbbec_mode()
+
+        # ===== Auto-close popup (no button) =====
+        popup = QDialog(self)
+        popup.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
+        popup.setModal(False)
+        popup.setFixedSize(420, 140)
+        popup.setStyleSheet("""
+            QDialog {
+                background-color: #070E18;
+                border: 2px solid #FF3344;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #FFFFFF;
+                font-size: 22px;
+                font-weight: 700;
+                font-family: Consolas;
+            }
+        """)
+
+        layout = QVBoxLayout(popup)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        label = QLabel("PIPELINE STOPPED\nMissing objects detected")
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+
+        popup.show()
+
+        geo = popup.frameGeometry()
+        center = self.geometry().center()
+        geo.moveCenter(center)
+        popup.move(geo.topLeft())
+
+        QTimer.singleShot(2000, popup.close)
+
+    def show_missing_objects_hand_dialog(self, missing):
+        if self.precheck_missing_dialog and self.precheck_missing_dialog.isVisible():
+            return
+
+        missing_text = "\n".join(f"• {name}" for name in missing)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Missing Objects Detected")
+        dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        dialog.setModal(True)
+        dialog.setFixedSize(980, 760)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #070E18;
+                border: 2px solid #FFAA00;
+            }
+            QLabel {
+                background: transparent;
+                color: #FFFFFF;
+            }
+        """)
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Header
+        hdr = QFrame()
+        hdr.setFixedHeight(82)
+        hdr.setStyleSheet("QFrame { background-color: #1A1000; border-bottom: 1px solid #553300; }")
+        hdr_row = QHBoxLayout(hdr)
+        hdr_row.setContentsMargins(22, 0, 22, 0)
+
+        icon = QLabel("⚠")
+        icon.setStyleSheet("color: #FFAA00; font-size: 28px; font-weight: 900;")
+        title = QLabel("MISSING OBJECTS DETECTED")
+        title.setStyleSheet(
+            "color: #FFFFFF; font-size: 28px; font-weight: 900; "
+            "letter-spacing: 2px; font-family: Consolas;"
+        )
+
+        hdr_row.addWidget(icon)
+        hdr_row.addSpacing(12)
+        hdr_row.addWidget(title)
+        hdr_row.addStretch()
+        root.addWidget(hdr)
+
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(28, 24, 28, 24)
+        body_layout.setSpacing(20)
+
+        # Missing list
+        info = QLabel(
+            "The following expected object(s) were not detected:\n\n"
+            f"{missing_text}"
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("""
+            QLabel {
+                background-color: #030810;
+                border: 1px solid #553300;
+                border-left: 4px solid #FFAA00;
+                padding: 18px;
+                font-size: 24px;
+                line-height: 1.5;
+            }
+        """)
+        body_layout.addWidget(info)
+
+        # ===== Main row: left instructions, right progress =====
+        main_row = QHBoxLayout()
+        main_row.setSpacing(28)
+
+        # Left panel
+        left_panel = QFrame()
+        left_panel.setMinimumWidth(360)
+        left_panel.setStyleSheet("""
+            QFrame {
+                background-color: #031420;
+                border: 2px solid #0A3A60;
+                border-radius: 10px;
+            }
+        """)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(18, 18, 18, 18)
+        left_layout.setSpacing(16)
+
+        left_title = QLabel("HAND CONTROL")
+        left_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        left_title.setStyleSheet("""
+            QLabel {
+                color: #00E5FF;
+                font-size: 24px;
+                font-weight: 900;
+                font-family: Consolas;
+                letter-spacing: 1px;
+                background-color: #041C2C;
+                border: 1px solid #0A4A70;
+                border-radius: 6px;
+                padding: 10px 14px;
+            }
+        """)
+        left_layout.addWidget(left_title)
+
+        # Continue card
+        continue_card = QFrame()
+        continue_card.setStyleSheet("""
+            QFrame {
+                background-color: #021826;
+                border: 1px solid #0A5070;
+                border-left: 5px solid #00E5FF;
+                border-radius: 8px;
+            }
+        """)
+        continue_layout = QVBoxLayout(continue_card)
+        continue_layout.setContentsMargins(16, 14, 16, 14)
+        continue_layout.setSpacing(8)
+
+        continue_title = QLabel("[ CONTINUE ]")
+        continue_title.setStyleSheet("""
+            QLabel {
+                color: #00E5FF;
+                font-size: 20px;
+                font-weight: 900;
+                font-family: Consolas;
+                letter-spacing: 1px;
+                border: none;
+                background: transparent;
+            }
+        """)
+        continue_layout.addWidget(continue_title)
+
+        continue_text = QLabel(
+            "• Hold 3 seconds\n"
+            "• Then RELEASE"
+        )
+        continue_text.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        continue_text.setWordWrap(True)
+        continue_text.setStyleSheet("""
+            QLabel {
+                color: #B8F6FF;
+                font-size: 21px;
+                font-weight: 700;
+                font-family: Consolas;
+                line-height: 1.5;
+                border: none;
+                background: transparent;
+            }
+        """)
+        continue_layout.addWidget(continue_text)
+
+        left_layout.addWidget(continue_card)
+
+        # Stop card
+        stop_card = QFrame()
+        stop_card.setStyleSheet("""
+            QFrame {
+                background-color: #1A0B12;
+                border: 1px solid #6A1C28;
+                border-left: 5px solid #FF4455;
+                border-radius: 8px;
+            }
+        """)
+        stop_layout = QVBoxLayout(stop_card)
+        stop_layout.setContentsMargins(16, 14, 16, 14)
+        stop_layout.setSpacing(8)
+
+        stop_title = QLabel("[ STOP ]")
+        stop_title.setStyleSheet("""
+            QLabel {
+                color: #FF5566;
+                font-size: 20px;
+                font-weight: 900;
+                font-family: Consolas;
+                letter-spacing: 1px;
+                border: none;
+                background: transparent;
+            }
+        """)
+        stop_layout.addWidget(stop_title)
+
+        stop_text = QLabel(
+            "• Hold 5 seconds\n"
+            "• Keep holding to stop"
+        )
+        stop_text.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        stop_text.setWordWrap(True)
+        stop_text.setStyleSheet("""
+            QLabel {
+                color: #FFC0C6;
+                font-size: 21px;
+                font-weight: 700;
+                font-family: Consolas;
+                line-height: 1.5;
+                border: none;
+                background: transparent;
+            }
+        """)
+        stop_layout.addWidget(stop_text)
+
+        left_layout.addWidget(stop_card)
+        left_layout.addStretch()
+
+        # Right panel
+        right_panel = QFrame()
+        right_panel.setStyleSheet("""
+            QFrame {
+                background-color: transparent;
+                border: none;
+            }
+        """)
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(18)
+        right_layout.setAlignment(Qt.AlignCenter)
+
+        self.missing_progress_ring = HoldProgressRing()
+        right_layout.addWidget(self.missing_progress_ring, alignment=Qt.AlignCenter)
+
+        self.timer_label = QLabel("⏱ WAITING FOR HAND...")
+        self.timer_label.setAlignment(Qt.AlignCenter)
+        self.timer_label.setStyleSheet("""
+            QLabel {
+                color: #00FF88;
+                font-size: 28px;
+                font-weight: 900;
+                font-family: Consolas;
+                background-color: #031410;
+                border: 1px solid #0A5030;
+                padding: 16px;
+                border-radius: 6px;
+            }
+        """)
+        right_layout.addWidget(self.timer_label)
+
+        self.timer_sub_label = QLabel("Place hand in trigger box to begin")
+        self.timer_sub_label.setAlignment(Qt.AlignCenter)
+        self.timer_sub_label.setStyleSheet("""
+            QLabel {
+                color: #AACCEE;
+                font-size: 20px;
+                font-family: Consolas;
+                border: none;
+                background: transparent;
+            }
+        """)
+        right_layout.addWidget(self.timer_sub_label)
+
+        # Make left panel bigger
+        main_row.addWidget(left_panel, 2)
+        main_row.addWidget(right_panel, 2)
+
+        body_layout.addLayout(main_row)
+        root.addWidget(body)
+
+        self.precheck_missing_dialog = dialog
+        self.precheck_missing_hand_active = True
+        self.ignore_orbbec_start_trigger = True
+
+        if self.orbbec_thread:
+            try:
+                print("[DEBUG] ENTER missing_decision mode")
+                self.orbbec_thread.set_trigger_mode("missing_decision")
+                self.orbbec_thread.set_trigger_state("missing_decision")
+                self.orbbec_thread.reset_trigger_progress()
+            except Exception as e:
+                print(f"[ERROR] Failed to switch trigger mode: {e}")
+
+        # UI refresh timer
+        self._missing_timer = QTimer(self)
+        self._missing_timer.timeout.connect(self._update_missing_timer)
+        self._missing_timer.start(100)
+
+        def _cleanup():
+            if hasattr(self, "_missing_timer") and self._missing_timer:
+                self._missing_timer.stop()
+                self._missing_timer.deleteLater()
+                self._missing_timer = None
+
+            self.precheck_missing_dialog = None
+            self.precheck_missing_hand_active = False
+
+            if hasattr(self, "missing_progress_ring"):
+                self.missing_progress_ring = None
+            if hasattr(self, "timer_label"):
+                self.timer_label = None
+            if hasattr(self, "timer_sub_label"):
+                self.timer_sub_label = None
+
+            self._restore_main_orbbec_mode()
+
+        dialog.finished.connect(_cleanup)
+        dialog.exec()
+
+    def _update_missing_timer(self):
+        if not self.precheck_missing_hand_active:
+            return
+
+        if not self.orbbec_thread:
+            return
+
+        if not hasattr(self, "timer_label") or self.timer_label is None:
+            return
+
+        if not hasattr(self, "missing_progress_ring") or self.missing_progress_ring is None:
+            return
+
+        trigger_time = getattr(self.orbbec_thread, "trigger_enter_time", None)
+
+        if trigger_time is None:
+            self.timer_label.setText("⏱ WAITING FOR HAND...")
+            if hasattr(self, "timer_sub_label") and self.timer_sub_label:
+                self.timer_sub_label.setText("Place hand in trigger box to begin")
+            self.missing_progress_ring.set_state(
+                0.0, "waiting", "WAITING", "FOR HAND"
+            )
+            return
+
+        import time
+        elapsed = time.perf_counter() - trigger_time
+
+        if elapsed < 3.0:
+            remain = 3.0 - elapsed
+            self.timer_label.setText(f"⏱ CONTINUE IN: {remain:.1f}s")
+            if hasattr(self, "timer_sub_label") and self.timer_sub_label:
+                self.timer_sub_label.setText("Hold until 3s, then RELEASE to continue")
+            self.missing_progress_ring.set_state(
+                elapsed, "continue", f"{remain:.1f}s", "CONTINUE"
+            )
+
+        elif elapsed < 5.0:
+            remain = 5.0 - elapsed
+            self.timer_label.setText(f"⏱ STOP IN: {remain:.1f}s")
+            if hasattr(self, "timer_sub_label") and self.timer_sub_label:
+                self.timer_sub_label.setText("Release now to CONTINUE, or keep holding to STOP")
+            self.missing_progress_ring.set_state(
+                elapsed, "stop", f"{remain:.1f}s", "STOP"
+            )
+
+        else:
+            self.timer_label.setText("⏱ STOP TRIGGERED")
+            if hasattr(self, "timer_sub_label") and self.timer_sub_label:
+                self.timer_sub_label.setText("Stopping pipeline...")
+            self.missing_progress_ring.set_state(
+                elapsed, "triggered", "STOP", "TRIGGERED"
+            )
 
     def cancel_qr_for_hand_trigger(self):
         """Cancel QR process"""
@@ -1671,50 +2211,9 @@ class MainPage(QWidget):
             else:
                 self.machine_status.setText("AI CHECK WARNING")
 
-            missing_text = "\n".join(f"• {name}" for name in missing)
-
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Warning)
-            msg.setWindowTitle("Missing Objects Detected")
-            msg.setText(
-                "The following expected object(s) were not detected:\n\n"
-                f"{missing_text}\n\n"
-                "Do you want to continue the pipeline anyway?"
-            )
-
-            continue_btn = msg.addButton("Continue", QMessageBox.AcceptRole)
-            stop_btn = msg.addButton("Stop", QMessageBox.RejectRole)
-            msg.setDefaultButton(stop_btn)
-
-            msg.exec()
-
             self.pending_run_after_precheck = False
-
-            if msg.clickedButton() == continue_btn:
-                if self.current_recipe and self.current_job_title:
-                    self.machine_status.setText(
-                        f"AI CHECK OVERRIDE  ·  {self.current_recipe}  ·  {self.current_job_title}")
-                elif self.current_recipe:
-                    self.machine_status.setText(f"AI CHECK OVERRIDE  ·  {self.current_recipe}")
-                else:
-                    self.machine_status.setText("AI CHECK OVERRIDE")
-
-                QTimer.singleShot(0, self.run_pipeline_after_precheck)
-                return
-            else:
-                if self.current_recipe and self.current_job_title:
-                    self.machine_status.setText(f"READY  ·  {self.current_recipe}  ·  {self.current_job_title}")
-                elif self.current_recipe:
-                    self.machine_status.setText(f"READY  ·  {self.current_recipe}")
-                else:
-                    self.machine_status.setText("READY")
-
-                QMessageBox.information(
-                    self,
-                    "Pipeline Stopped",
-                    "Pipeline was stopped because expected objects were missing."
-                )
-                return
+            self.show_missing_objects_hand_dialog(missing)
+            return
 
         self.pending_run_after_precheck = False
 

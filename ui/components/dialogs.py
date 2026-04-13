@@ -1695,7 +1695,7 @@ class ScrewDialog(QDialog):
 
         self.torque_spinbox = QSpinBox()
         self.torque_spinbox.setRange(1, 100); self.torque_spinbox.setValue(10)
-        self.torque_spinbox.setSuffix(" N·m"); self.torque_spinbox.setFixedHeight(64)
+        self.torque_spinbox.setSuffix(" kgf.cm"); self.torque_spinbox.setFixedHeight(64)
 
         param_grid.addWidget(_field("SCREW COUNT (pcs)", self.screw_spinbox),    0, 0)
         param_grid.addWidget(_field("SCREW TYPE",         self.screw_type_combo), 0, 1)
