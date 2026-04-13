@@ -31,7 +31,7 @@ matplotlib.use("Agg")
 # =========================================================
 # CONFIG
 # =========================================================
-SCREW_HOST = "192.168.1.18"
+SCREW_HOST = "192.168.1.19"
 SCREW_PORT = 1200
 SCREW_TIMEOUT = 1.0
 
@@ -151,6 +151,118 @@ selector_stop_wait_active         = False
 selector_stop_wait_message        = ""
 
 corner_monitor = None
+
+# =========================================================
+# BUZZER COMMANDS
+# =========================================================
+BUZZER_ON_FRAME  = bytes.fromhex("55 AA 07 02 11 00 01 23 B2 0D 0A")
+BUZZER_OFF_FRAME = bytes.fromhex("55 AA 07 02 11 00 00 E2 72 0D 0A")
+
+# send once when selector connects / reconnects
+READ_SELECTOR_STATUS_ON_CONNECT_FRAME = bytes.fromhex(
+    "55 AA 07 02 10 00 01 72 72 0D 0A"
+)
+
+def wait_for_selector_event(
+    size_text: str,
+    timeout_sec: Optional[float] = None,
+    previous_wrong_bits: Optional[set] = None,
+):
+    """
+    Return:
+      ("OK", expected_bit, active_wrong_bits)
+      ("WRONG", wrong_bit, active_wrong_bits)   # only for a newly appeared wrong bit
+      ("CLEAR", None, [])                       # all wrong bits released
+      ("TIMEOUT", None, active_wrong_bits)
+    """
+    expected_bit = get_selector_bit_index_for_size(size_text)
+    seen_wrong_bits = set(previous_wrong_bits or set())
+    deadline = None if timeout_sec is None else (time.time() + timeout_sec)
+
+    with selector_condition:
+        while True:
+            bits = latest_selector_bits[:]
+            active_bits = [i + 1 for i, v in enumerate(bits) if v == 1]
+            active_wrong_bits = [b for b in active_bits if b != expected_bit]
+
+            # keep only still-active wrong bits
+            seen_wrong_bits &= set(active_wrong_bits)
+
+            # correct bit taken and no wrong bits active
+            if expected_bit in active_bits and not active_wrong_bits:
+                return ("OK", expected_bit, active_wrong_bits)
+
+            # new wrong bit appears
+            new_wrong_bits = [b for b in active_wrong_bits if b not in seen_wrong_bits]
+            if new_wrong_bits:
+                wrong_bit = new_wrong_bits[0]
+                seen_wrong_bits.add(wrong_bit)
+                return ("WRONG", wrong_bit, active_wrong_bits)
+
+            # previously wrong, now all wrong bits cleared
+            if previous_wrong_bits and not active_wrong_bits:
+                return ("CLEAR", None, [])
+
+            if deadline is None:
+                selector_condition.wait(timeout=0.2)
+                continue
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return ("TIMEOUT", None, active_wrong_bits)
+
+            selector_condition.wait(timeout=min(remaining, 0.2))
+
+def send_buzzer_frame(frame: bytes):
+    global selector_worker
+
+    worker = selector_worker
+    if worker is None or not worker.is_alive():
+        log_error("[BUZZER] selector worker not running")
+        return False
+
+    client = getattr(worker, "client", None)
+    if client is None or client.sock is None:
+        log_error("[BUZZER] selector client not connected")
+        return False
+
+    try:
+        with selector_lock:
+            client.send_frame(frame)
+        log_debug(f"[BUZZER] sent: {frame.hex(' ').upper()}")
+        return True
+    except Exception as e:
+        log_error(f"[BUZZER] send failed: {e}")
+        return False
+
+def send_buzzer_on():
+    return send_buzzer_frame(BUZZER_ON_FRAME)
+
+def send_buzzer_off():
+    return send_buzzer_frame(BUZZER_OFF_FRAME)
+
+
+def send_selector_read_on_connect():
+    global selector_worker
+
+    worker = selector_worker
+    if worker is None or not worker.is_alive():
+        log_error("[SELECTOR] worker not running for read-on-connect")
+        return False
+
+    client = getattr(worker, "client", None)
+    if client is None or client.sock is None:
+        log_error("[SELECTOR] client not connected for read-on-connect")
+        return False
+
+    try:
+        with selector_lock:
+            client.send_frame(READ_SELECTOR_STATUS_ON_CONNECT_FRAME)
+        log_debug("[SELECTOR] Sent read-status-on-connect frame")
+        return True
+    except Exception as e:
+        log_error(f"[SELECTOR] read-on-connect send failed: {e}")
+        return False
 
 
 # =========================================================
@@ -564,38 +676,63 @@ def move_to_next_screw_block():
     return set_current_screw_by_index(next_index)
 
 def prepare_current_screw_from_recipe(conn=None):
-    """Wait for correct selector bit, then apply preset. Replies ERROR,WRONG_SCREW on each bad pick."""
     if current_screw_index < 0:
         raise RuntimeError("No current screw selected")
-    screw_cfg   = all_recipe_screws[current_screw_index]
-    size_value  = screw_cfg["type"]
+
+    screw_cfg = all_recipe_screws[current_screw_index]
+    size_value = screw_cfg["type"]
     length_value = screw_cfg["length"]
     torque_value = screw_cfg["torque"]
+
     if size_value not in SIZE_TO_SELECTOR_BIT:
         raise ValueError(f"UNSUPPORTED_SELECTOR_SIZE,{size_value}")
+
     set_selector_guidance(expected_size=size_value, wrong_bits=[])
     log_debug(f"[SELECTOR] Waiting for {size_value}…")
+
     already_reported_wrong = set()
+    buzzer_is_on = False
+
     while True:
-        result, bit_no = wait_for_correct_selector_or_wrong(
-            size_value, None, skip_reported_bits=already_reported_wrong
+        result, bit_no, active_wrong_bits = wait_for_selector_event(
+            size_value,
+            None,
+            previous_wrong_bits=already_reported_wrong
         )
+
+        # keep UI guidance updated
+        set_selector_guidance(expected_size=size_value, wrong_bits=active_wrong_bits)
+
         if result == "OK":
-            set_selector_guidance(expected_size=size_value, wrong_bits=[])
+            if buzzer_is_on:
+                send_buzzer_off()
+                buzzer_is_on = False
+
             apply_screw_preset_to_driver(size_value, length_value, torque_value)
             return True
+
         if result == "WRONG":
-            active_bits = get_latest_selector_bits()
-            active_wrong_bits = [
-                i + 1 for i, v in enumerate(active_bits)
-                if v == 1 and (i + 1) != get_selector_bit_index_for_size(size_value)
-            ]
-            set_selector_guidance(expected_size=size_value, wrong_bits=active_wrong_bits)
+            if not buzzer_is_on:
+                send_buzzer_on()
+                buzzer_is_on = True
+
             if bit_no not in already_reported_wrong:
                 already_reported_wrong.add(bit_no)
-                log_error(f"[ERROR] Wrong screw bit {bit_no} ({selector_bit_to_size(bit_no)}) for expected {size_value}")
+                log_error(
+                    f"[ERROR] Wrong screw bit {bit_no} ({selector_bit_to_size(bit_no)}) for expected {size_value}"
+                )
                 if conn:
                     send_reply(conn, "ERROR,WRONG_SCREW")
+            continue
+
+        if result == "CLEAR":
+            # wrong bit was put back, stop buzzer immediately
+            if buzzer_is_on:
+                send_buzzer_off()
+                buzzer_is_on = False
+
+            # clear remembered wrong bits so next wrong pickup can trigger again
+            already_reported_wrong.clear()
             continue
 
 
@@ -1157,7 +1294,7 @@ def handle_live_packet(pkt):
 def cmd_stop():                 return build_frame(STOP_COMMAND, STOP_DATA)
 def cmd_select_mode(mode, num): return build_frame(b"\x02\x05", bytes([mode, num]))
 def cmd_save_parameters():      return build_frame(b"\x04\x00", b"\x00")
-def cmd_read_selector_status(): return build_frame(b"\x03\x12", bytes([0x00] * 8))
+def cmd_read_selector_status(): return READ_SELECTOR_STATUS_ON_CONNECT_FRAME
 
 def cmd_set_group_parameters(
     group_no, count_value, process_completion_time_s, max_locking_angle,
@@ -1381,12 +1518,19 @@ class BitSelectorWorker(threading.Thread):
                 self.client = BitSelectorTCPClient(BIT_SELECTOR_HOST, BIT_SELECTOR_PORT, BIT_SELECTOR_TIMEOUT)
                 self.client.connect()
                 log_debug("[SELECTOR] Worker connected")
+
+                # send read status once after connect / reconnect
+                with selector_lock:
+                    self.client.send_frame(READ_SELECTOR_STATUS_ON_CONNECT_FRAME)
+                log_debug("[SELECTOR] Sent read-status-on-connect frame")
+
                 while self.running:
                     try:
-                        self.client.send_frame(cmd_read_selector_status())
+                        with selector_lock:
+                            self.client.send_frame(cmd_read_selector_status())
                         for frame in self.client.recv_frames():
                             if not verify_frame(frame): continue
-                            if (frame[3], frame[4]) == (0x03, 0x12):
+                            if (frame[3], frame[4]) in ((0x03, 0x12), (0x02, 0x10)):
                                 status = parse_selector_status(frame)
                                 handle_selector_status(status)
                                 if status.bits != self.last_bits:
@@ -1665,7 +1809,7 @@ class TorqueBar(tk.Canvas):
 
 class LEDIndicator(tk.Canvas):
     def __init__(self, master, label, **kw):
-        kw.setdefault("width", 46); kw.setdefault("height", 44)
+        kw.setdefault("width", 62); kw.setdefault("height", 58)
         kw.setdefault("bg", P_CARD); kw.setdefault("highlightthickness", 0)
         super().__init__(master, **kw)
         self._label = label; self._state = None; self._blink_on = True
@@ -1681,43 +1825,43 @@ class LEDIndicator(tk.Canvas):
 
     def _draw(self):
         self.delete("all")
-        w = self.winfo_width() or 46; h = self.winfo_height() or 44
-        cx = w // 2; r = 8
+        w = self.winfo_width() or 62; h = self.winfo_height() or 58
+        cx = w // 2; r = 12
         s = self._state
         if s == 1:
-            self.create_oval(cx-r-5,1,cx+r+5,2*r+11,fill="#0b3d2e",outline="")
-            self.create_oval(cx-r,6,cx+r,6+2*r,fill=P_GREEN,outline="#34d399",width=2)
-            self.create_oval(cx-r+3,9,cx-r+7,13,fill="#bbf7d0",outline="")
+            self.create_oval(cx-r-6,2,cx+r+6,2*r+14,fill="#0b3d2e",outline="")
+            self.create_oval(cx-r,7,cx+r,7+2*r,fill=P_GREEN,outline="#34d399",width=2)
+            self.create_oval(cx-r+4,11,cx-r+9,16,fill="#bbf7d0",outline="")
         elif s == "expected":
-            self.create_oval(cx-r-3,3,cx+r+3,2*r+9,fill="#09251c",outline="")
-            self.create_oval(cx-r,6,cx+r,6+2*r,fill="#123f31",outline=P_GREEN,width=2)
-            self.create_oval(cx-r+3,9,cx-r+7,13,fill="#6ee7b7",outline="")
+            self.create_oval(cx-r-4,4,cx+r+4,2*r+12,fill="#09251c",outline="")
+            self.create_oval(cx-r,7,cx+r,7+2*r,fill="#123f31",outline=P_GREEN,width=2)
+            self.create_oval(cx-r+4,11,cx-r+9,16,fill="#6ee7b7",outline="")
         elif s == "wrong":
             if self._blink_on:
-                self.create_oval(cx-r-5,1,cx+r+5,2*r+11,fill="#3a1010",outline="")
-                self.create_oval(cx-r,6,cx+r,6+2*r,fill=P_RED,outline="#f87171",width=2)
-                self.create_oval(cx-r+3,9,cx-r+7,13,fill="#fecaca",outline="")
+                self.create_oval(cx-r-6,2,cx+r+6,2*r+14,fill="#3a1010",outline="")
+                self.create_oval(cx-r,7,cx+r,7+2*r,fill=P_RED,outline="#f87171",width=2)
+                self.create_oval(cx-r+4,11,cx-r+9,16,fill="#fecaca",outline="")
             else:
-                self.create_oval(cx-r,6,cx+r,6+2*r,fill="#2a1111",outline="#5f1d1d",width=1)
+                self.create_oval(cx-r,7,cx+r,7+2*r,fill="#2a1111",outline="#5f1d1d",width=1)
         elif s in ("missing","putback"):
             if self._blink_on:
-                self.create_oval(cx-r-5,1,cx+r+5,2*r+11,fill="#3f3208",outline="")
-                self.create_oval(cx-r,6,cx+r,6+2*r,fill="#facc15",outline="#fde047",width=2)
-                self.create_oval(cx-r+3,9,cx-r+7,13,fill="#fef9c3",outline="")
+                self.create_oval(cx-r-6,2,cx+r+6,2*r+14,fill="#3f3208",outline="")
+                self.create_oval(cx-r,7,cx+r,7+2*r,fill="#facc15",outline="#fde047",width=2)
+                self.create_oval(cx-r+4,11,cx-r+9,16,fill="#fef9c3",outline="")
             else:
-                self.create_oval(cx-r,6,cx+r,6+2*r,fill="#3d3314",outline="#6b5c19",width=1)
+                self.create_oval(cx-r,7,cx+r,7+2*r,fill="#3d3314",outline="#6b5c19",width=1)
         elif s == "take_again":
             if self._blink_on:
-                self.create_oval(cx-r-5,1,cx+r+5,2*r+11,fill="#0b2942",outline="")
-                self.create_oval(cx-r,6,cx+r,6+2*r,fill="#38bdf8",outline="#7dd3fc",width=2)
-                self.create_oval(cx-r+3,9,cx-r+7,13,fill="#e0f2fe",outline="")
+                self.create_oval(cx-r-6,2,cx+r+6,2*r+14,fill="#0b2942",outline="")
+                self.create_oval(cx-r,7,cx+r,7+2*r,fill="#38bdf8",outline="#7dd3fc",width=2)
+                self.create_oval(cx-r+4,11,cx-r+9,16,fill="#e0f2fe",outline="")
             else:
-                self.create_oval(cx-r,6,cx+r,6+2*r,fill="#163246",outline="#2b5870",width=1)
+                self.create_oval(cx-r,7,cx+r,7+2*r,fill="#163246",outline="#2b5870",width=1)
         elif s == 0:
-            self.create_oval(cx-r,6,cx+r,6+2*r,fill="#1a2332",outline="#2a3a50",width=1)
+            self.create_oval(cx-r,7,cx+r,7+2*r,fill="#1a2332",outline="#2a3a50",width=1)
         else:
-            self.create_oval(cx-r,6,cx+r,6+2*r,fill="#78350f",outline="#a16207",width=1)
-        self.create_text(cx, 6+2*r+10, text=self._label, fill=P_DIM, font=("Consolas",7,"bold"), anchor="center")
+            self.create_oval(cx-r,7,cx+r,7+2*r,fill="#78350f",outline="#a16207",width=1)
+        self.create_text(cx, 7+2*r+12, text=self._label, fill=P_DIM, font=("Consolas",8,"bold"), anchor="center")
 
 
 # =========================================================
@@ -1761,13 +1905,20 @@ class CornerMonitor(tk.Toplevel):
         self.overrideredirect(True); self.attributes("-topmost", True)
         self.configure(bg=P_DEEP)
         self._collapsed = False; self._data = CornerData()
+        self._win_width  = self.WIDTH   # resizable instance width
+        self._win_height = None         # None = auto from content
+        self._saved_x = None; self._saved_y = None
+        self._resizing = False          # suppresses _tick during resize
+        self._load_win_config()         # restore saved pos/size/collapsed
         self._at = AnimF(); self._al = AnimF(); self._atn = AnimF(); self._asp = AnimF()
         self._drag_x = 0; self._drag_y = 0
         self._result_state = 0; self._result_time = 0.0
         self._result_torque = 0.0; self._result_angle = 0; self._result_error = "none"
         self._blink_on = True; self._selector_blink_on = True
         self._set_selector_message("Waiting selector...", P_DIM)
-        self._build(); self._place(); self._tick()
+        self._build(); self._place()
+        self._apply_font_scale(self._win_width, self._win_height or self._exph())
+        self._tick()
 
     def push_packet(self, d: CornerData):
         prev = self._data.tightened_state; self._data = d
@@ -1796,15 +1947,23 @@ class CornerMonitor(tk.Toplevel):
         self._build_header(); self._build_result_banner(); self._build_led_row()
         self._build_torque(); self._build_divider(); self._build_angles(); self._build_speed()
         self._exp.pack(fill="both", expand=True)
-        self._hdr.bind("<Button-1>", self._sd)
-        self._hdr.bind("<B1-Motion>", self._dd)
+        self._hdr.bind("<Button-1>",       self._sd)
+        self._hdr.bind("<B1-Motion>",       self._dd)
+        self._hdr.bind("<ButtonRelease-1>", self._du)
+        # ── resize grip (bottom-right corner) ────────────────────────────
+        self._grip = tk.Label(self, text="\u22bf", bg=P_DEEP, fg=P_DIM,
+                              font=("Consolas", 9), cursor="sizing")
+        self._grip.place(relx=1.0, rely=1.0, anchor="se", x=-2, y=-2)
+        self._grip.bind("<Button-1>",        self._rs)
+        self._grip.bind("<B1-Motion>",       self._rd)
+        self._grip.bind("<ButtonRelease-1>", self._rr)
 
     # ── Header with 4 status dots ─────────────────────────────────────────
     def _build_header(self):
         self._hdr = tk.Frame(self._exp, bg="#0f1923", padx=14, pady=7)
         self._hdr.pack(fill="x")
-        tk.Label(self._hdr, text="TIGHTENING RESULT", bg="#0f1923", fg=P_DIM,
-                 font=("Consolas",8,"bold")).pack(side="left")
+        tk.Label(self._hdr, text="TIGHTENING RESULT", bg="#0f1923", fg=P_BRIGHT,
+                 font=("Consolas",11,"bold")).pack(side="left")
         cb = tk.Label(self._hdr, text="\u2715", bg="#0f1923", fg=P_DIM,
                       font=("Consolas",11), cursor="hand2")
         cb.pack(side="right", padx=(6,0))
@@ -1839,31 +1998,37 @@ class CornerMonitor(tk.Toplevel):
         tk.Frame(self._exp, bg=P_BORDER, height=1).pack(fill="x")
 
     def _build_result_banner(self):
-        self._banner = tk.Frame(self._exp, bg=P_CARD); self._banner.pack(fill="x", padx=10, pady=(8,4))
-        self._bi = tk.Frame(self._banner, bg=P_CARD); self._bi.pack(fill="x", padx=2, pady=2)
-        self._b_state  = tk.Label(self._bi, text="\u2014", bg=P_CARD, fg=P_DIM,
-                                   font=("Consolas",38,"bold"), anchor="center")
-        self._b_state.pack(fill="x", pady=(8,0))
+        self._banner = tk.Frame(self._exp, bg=P_CARD)
+        self._banner.pack(fill="both", expand=True, padx=10, pady=(6,2))
+        self._bi = tk.Frame(self._banner, bg=P_CARD)
+        self._bi.pack(fill="both", expand=True, padx=2, pady=2)
+        self._b_state = tk.Label(self._bi, text="\u2014", bg=P_CARD, fg=P_DIM,
+                                  font=("Consolas",30,"bold"), anchor="center")
+        self._b_state.pack(fill="both", expand=True)
         self._b_detail = tk.Label(self._bi, text="Waiting...", bg=P_CARD, fg=P_DIM,
                                    font=("Consolas",10), anchor="center")
-        self._b_detail.pack(fill="x", pady=(2,8))
+        self._b_detail.pack(fill="x", pady=(2,6))
 
     def _build_led_row(self):
-        outer = tk.Frame(self._exp, bg=P_PANEL, padx=10, pady=2); outer.pack(fill="x")
-        tk.Label(outer, text="BIT SELECTOR", bg=P_PANEL, fg=P_DIM, font=("Consolas",7,"bold")).pack(anchor="w")
-        row = tk.Frame(outer, bg=P_CARD, padx=6, pady=4,
+        outer = tk.Frame(self._exp, bg=P_PANEL, padx=10, pady=4); outer.pack(fill="x")
+        tk.Label(outer, text="BIT SELECTOR", bg=P_PANEL, fg=P_BRIGHT, font=("Consolas",10,"bold")).pack(anchor="w")
+        row = tk.Frame(outer, bg=P_CARD, padx=6, pady=6,
                        highlightbackground=P_BORDER, highlightthickness=1)
-        row.pack(fill="x", pady=(4,4))
+        row.pack(fill="x", pady=(4,6))
         self._selector_row = row; self._leds = []
         for i, name in enumerate(LED_NAMES):
             row.grid_columnconfigure(i, weight=1)
             led = LEDIndicator(row, name)
-            led.grid(row=0, column=i, padx=2, pady=2, sticky="nsew")
+            led.grid(row=0, column=i, padx=3, pady=3, sticky="nsew")
             self._leds.append(led)
-        self._selector_msg_font = tkfont.Font(family="Consolas", size=11, weight="bold")
-        self._selector_msg = tk.Label(outer, text="Waiting selector...", bg=P_PANEL, fg=P_CYAN,
+        # selector message card
+        msg_card = tk.Frame(outer, bg=P_CARD, padx=10, pady=7,
+                            highlightbackground=P_BORDER, highlightthickness=1)
+        msg_card.pack(fill="x", pady=(0,4))
+        self._selector_msg_font = tkfont.Font(family="Consolas", size=14, weight="bold")
+        self._selector_msg = tk.Label(msg_card, text="Waiting selector...", bg=P_CARD, fg=P_CYAN,
                                       font=self._selector_msg_font, anchor="w", justify="left")
-        self._selector_msg.pack(fill="x", pady=(0,4))
+        self._selector_msg.pack(fill="x")
 
     def _wrap_text_to_width(self, text, max_width_px, font_obj):
         words = str(text).split()
@@ -1881,8 +2046,8 @@ class CornerMonitor(tk.Toplevel):
             self.update_idletasks()
             width_px = max((self._selector_row.winfo_width() if hasattr(self,"_selector_row") else 0) - 12, 160)
         except Exception: width_px = 260
-        chosen_size = 11; wrapped_text = str(text)
-        for size in (11,10,9,8,7):
+        chosen_size = 14; wrapped_text = str(text)
+        for size in (14,13,12,11,10,9,8):
             self._selector_msg_font.configure(size=size)
             wrapped = self._wrap_text_to_width(str(text), width_px, self._selector_msg_font)
             if len(wrapped.splitlines() or [""]) <= 3:
@@ -1934,7 +2099,7 @@ class CornerMonitor(tk.Toplevel):
     def _build_torque(self):
         sec = tk.Frame(self._exp, bg=P_PANEL, padx=14, pady=6); sec.pack(fill="x")
         r = tk.Frame(sec, bg=P_PANEL); r.pack(fill="x")
-        tk.Label(r, text="TORQUE", bg=P_PANEL, fg=P_DIM, font=("Consolas",8,"bold")).pack(side="left")
+        tk.Label(r, text="TORQUE", bg=P_PANEL, fg=P_BRIGHT, font=("Consolas",10,"bold")).pack(side="left")
         self._unit = tk.Label(r, text="kgf.cm", bg=P_BLUE_BG, fg=P_BLUE,
                                font=("Consolas",8,"bold"), padx=8, pady=1)
         self._unit.pack(side="right")
@@ -1969,7 +2134,7 @@ class CornerMonitor(tk.Toplevel):
         c = tk.Frame(par, bg=P_CARD, padx=10, pady=6,
                      highlightbackground=P_BORDER, highlightthickness=1)
         c.grid(row=0, column=col, padx=4, sticky="nsew")
-        tk.Label(c, text=title, bg=P_CARD, fg=P_DIM, font=("Consolas",7,"bold")).pack(anchor="w")
+        tk.Label(c, text=title, bg=P_CARD, fg=P_BRIGHT, font=("Consolas",10,"bold")).pack(anchor="w")
         vf = tk.Frame(c, bg=P_CARD); vf.pack(anchor="w", pady=(3,3))
         v = tk.Label(vf, text="0", bg=P_CARD, fg=P_BRIGHT, font=("Consolas",20,"bold")); v.pack(side="left")
         tk.Label(vf, text="\u00b0", bg=P_CARD, fg=P_DIM, font=("Consolas",12)).pack(side="left", anchor="s", pady=(0,2))
@@ -1980,7 +2145,7 @@ class CornerMonitor(tk.Toplevel):
 
     def _build_speed(self):
         sec = tk.Frame(self._exp, bg=P_PANEL, padx=14, pady=5); sec.pack(fill="x")
-        tk.Label(sec, text="SPEED", bg=P_PANEL, fg=P_DIM, font=("Consolas",7,"bold")).pack(side="left")
+        tk.Label(sec, text="SPEED", bg=P_PANEL, fg=P_BRIGHT, font=("Consolas",10,"bold")).pack(side="left")
         rf = tk.Frame(sec, bg=P_PANEL); rf.pack(side="right")
         self._spv = tk.Label(rf, text="0", bg=P_PANEL, fg=P_MID, font=("Consolas",13,"bold")); self._spv.pack(side="left")
         tk.Label(rf, text=" RPM", bg=P_PANEL, fg=P_DIM, font=("Consolas",8,"bold")).pack(side="left")
@@ -2009,7 +2174,7 @@ class CornerMonitor(tk.Toplevel):
         elif age < self.RESULT_HOLD_SEC: bg = bg_on; fg = col
         else: bg = P_CARD; fg = col
         self._set_banner_bg(bg)
-        self._b_state.configure(text=state_txt, fg=fg, bg=bg, font=("Consolas",38,"bold"))
+        self._b_state.configure(text=state_txt, fg=fg, bg=bg, font=("Consolas",30,"bold"))
         detail = f"T={self._result_torque:.2f}   A={self._result_angle}\u00b0"
         if self._result_error and self._result_error != "none":
             detail += f"   ERR: {self._result_error}"
@@ -2024,24 +2189,114 @@ class CornerMonitor(tk.Toplevel):
             self._exp.pack_forget(); self._coll.pack(fill="x"); self.geometry("180x44")
         else:
             self._coll.pack_forget(); self._exp.pack(fill="both", expand=True)
-            self.geometry(f"{self.WIDTH}x{self._exph()}")
-        self._place()
+            self.geometry(f"{self._win_width}x{self._exph()}")
+        self._place(); self._save_win_config()
+
     def _exph(self):
         self.update_idletasks(); return self._exp.winfo_reqheight() + 4
+
     def _place(self):
-        self.update_idletasks(); sw = self.winfo_screenwidth()
-        w = self.WIDTH if not self._collapsed else 180
-        h = self._exph() if not self._collapsed else 44
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
-        x = (screen_width - w) - 150
-        y = (screen_height - h) // 2
+        self.update_idletasks()
+        w = self._win_width if not self._collapsed else 180
+        h = (self._win_height if (self._win_height and not self._collapsed)
+             else (self._exph() if not self._collapsed else 44))
+        if self._saved_x is not None:
+            x, y = self._saved_x, self._saved_y
+            sw = self.winfo_screenwidth(); sh = self.winfo_screenheight()
+            x = max(0, min(x, sw - w)); y = max(0, min(y, sh - 30))
+        else:
+            sw = self.winfo_screenwidth(); sh = self.winfo_screenheight()
+            x = (sw - w) // 2; y = (sh - h) // 2 + 130
         self.geometry(f"{w}x{h}+{x}+{y}")
+
+    # ── drag to move ──────────────────────────────────────────────────────
     def _sd(self, e): self._drag_x = e.x; self._drag_y = e.y
-    def _dd(self, e): self.geometry(f"+{self.winfo_x()+e.x-self._drag_x}+{self.winfo_y()+e.y-self._drag_y}")
+    def _dd(self, e):
+        nx = self.winfo_x() + e.x - self._drag_x
+        ny = self.winfo_y() + e.y - self._drag_y
+        self.geometry(f"+{nx}+{ny}")
+        self._saved_x = nx; self._saved_y = ny
+    def _du(self, e): self._save_win_config()
+
+    # ── font scaling (applied once on resize release) ─────────────────────
+    _BASE_W = 320; _BASE_H = 650
+
+    def _apply_font_scale(self, w, h):
+        sw = max(0.55, w / self._BASE_W)
+        sh = max(0.55, h / self._BASE_H)
+        sz_banner = max(18, int(30 * min(sw * 1.1, sh * 1.6)))
+        sz_detail = max(8,  int(10 * sw))
+        sz_torque = max(16, int(30 * sw))
+        sz_angle  = max(12, int(20 * sw))
+        sz_speed  = max(9,  int(13 * sw))
+        sz_label  = max(7,  int(8  * sw))
+        try:
+            self._b_state .configure(font=("Consolas", sz_banner, "bold"))
+            self._b_detail.configure(font=("Consolas", sz_detail))
+            self._tq      .configure(font=("Consolas", sz_torque, "bold"))
+            self._unit    .configure(font=("Consolas", sz_label,  "bold"))
+            self._mnt     .configure(font=("Consolas", sz_label,  "bold"))
+            self._mxt     .configure(font=("Consolas", sz_label,  "bold"))
+            self._spv     .configure(font=("Consolas", sz_speed,  "bold"))
+            for d in (self._lw, self._tw):
+                d["v"] .configure(font=("Consolas", sz_angle, "bold"))
+                d["mn"].configure(font=("Consolas", sz_label, "bold"))
+                d["mx"].configure(font=("Consolas", sz_label, "bold"))
+        except Exception: pass
+
+    # ── resize grip handlers ──────────────────────────────────────────────
+    _MIN_W = 362; _MIN_H = 592
+
+    def _rs(self, e):
+        self._resizing = True
+        self._rsx = e.x_root; self._rsy = e.y_root
+        self._rsw = self._win_width
+        self._rsh = self._win_height if self._win_height else self.winfo_height()
+
+    def _rd(self, e):
+        new_w = self._rsw + (e.x_root - self._rsx)
+        new_h = self._rsh + (e.y_root - self._rsy)
+        if new_w < self._MIN_W:
+            new_w = self._MIN_W; self._rsx = e.x_root; self._rsw = self._MIN_W
+        if new_h < self._MIN_H:
+            new_h = self._MIN_H; self._rsy = e.y_root; self._rsh = self._MIN_H
+        self._win_width = new_w; self._win_height = new_h
+        if not self._collapsed:
+            self.geometry(f"{new_w}x{new_h}+{self.winfo_x()}+{self.winfo_y()}")
+
+    def _rr(self, e):
+        self._resizing = False
+        self._apply_font_scale(self._win_width, self._win_height or self.winfo_height())
+        self._save_win_config()
+
+    # ── persistent config ─────────────────────────────────────────────────
+    _CFG_PATH = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "sudong_ui_config.json"
+    )
+
+    def _load_win_config(self):
+        try:
+            with open(self._CFG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self._saved_x    = cfg.get("x")
+            self._saved_y    = cfg.get("y")
+            self._win_width  = int(cfg.get("width",  self.WIDTH))
+            self._win_height = cfg.get("height")
+            self._collapsed  = bool(cfg.get("collapsed", False))
+        except Exception: pass
+
+    def _save_win_config(self):
+        try:
+            with open(self._CFG_PATH, "w", encoding="utf-8") as f:
+                json.dump({"x": self.winfo_x(), "y": self.winfo_y(),
+                           "width": self._win_width, "height": self._win_height,
+                           "collapsed": self._collapsed}, f, indent=2)
+        except Exception: pass
 
     def _tick(self):
         try:
+            if self._resizing:
+                self.after(self.REFRESH_MS, self._tick); return
             self._selector_blink_on = not self._selector_blink_on
             d = self._data
             self._set_pill(d.tightened_state); self._update_banner()

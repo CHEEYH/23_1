@@ -2185,7 +2185,6 @@ class PipelineRunner:
                 orbbec_thread = manager.get_thread(recipe_name)
                 manager.attach_live_view(update_orbbec_view)
 
-                # ✅ Show cached frame immediately so UI does not wait for next frame_signal
                 if (
                         orbbec_thread is not None
                         and hasattr(orbbec_thread, "latest_frame")
@@ -2198,7 +2197,14 @@ class PipelineRunner:
                     except Exception as e:
                         print(f"[Assembly Step] ⚠️ Failed to display cached frame: {e}")
 
-                manager.set_handler(on_pipeline_trigger_from_orbbec)
+                try:
+                    if parent_widget and hasattr(parent_widget, "ignore_orbbec_start_trigger"):
+                        parent_widget.ignore_orbbec_start_trigger = True
+                        print("[Assembly Step] MainPage start trigger temporarily disabled")
+                except Exception as e:
+                    print(f"[Assembly Step] Failed to disable MainPage start trigger: {e}")
+
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_pipeline_trigger_from_orbbec, state="idle")
 
                 print("[Assembly Step] ✅ Using OrbbecManager")
             except Exception as e:
@@ -2217,9 +2223,32 @@ class PipelineRunner:
                 pass
 
             try:
-                manager.set_handler(None)
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
             except Exception:
                 pass
+
+            try:
+                if parent_widget and hasattr(parent_widget, "ignore_orbbec_start_trigger"):
+                    parent_widget.ignore_orbbec_start_trigger = False
+                    print("[Assembly Step] MainPage start trigger restored")
+            except Exception as e:
+                print(f"[Assembly Step] Failed to restore MainPage start trigger: {e}")
+
+        def disable_mainpage_start_trigger():
+            try:
+                if parent_widget and hasattr(parent_widget, "ignore_orbbec_start_trigger"):
+                    parent_widget.ignore_orbbec_start_trigger = True
+                    print("[RETRY] MainPage start trigger temporarily disabled")
+            except Exception as e:
+                print(f"[RETRY] Failed to disable MainPage start trigger: {e}")
+
+        def restore_mainpage_start_trigger():
+            try:
+                if parent_widget and hasattr(parent_widget, "ignore_orbbec_start_trigger"):
+                    parent_widget.ignore_orbbec_start_trigger = False
+                    print("[RETRY] MainPage start trigger restored")
+            except Exception as e:
+                print(f"[RETRY] Failed to restore MainPage start trigger: {e}")
 
         def start_detection_capture(status_text="STATUS: Opening camera."):
             nonlocal capture_runner
@@ -2275,6 +2304,8 @@ class PipelineRunner:
                 show_results()
                 verify_btn.setEnabled(False)
                 retry_btn.setEnabled(True)
+                disable_mainpage_start_trigger()
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_retry_hand_trigger, state="idle")
                 return
 
             try:
@@ -2294,6 +2325,8 @@ class PipelineRunner:
                         "font-size:12px;color:#FFAA00;font-weight:900;font-family:Consolas;padding:0px 10px;background:#030810;border-bottom:1px solid #0E2A40;")
                     show_results()
                     retry_btn.setEnabled(True)
+                    disable_mainpage_start_trigger()
+                    PipelineRunner.set_orbbec_trigger(orbbec_thread, on_retry_hand_trigger, state="idle")
                     verify_btn.setEnabled(False)
                     return
 
@@ -2343,8 +2376,26 @@ class PipelineRunner:
                         print(f"   ❌ OTHER")
 
                 best_target = None
+                predictions_for_sending = []
+
                 if target_predictions:
                     best_target = max(target_predictions, key=lambda p: p.get('confidence', 0))
+
+                    # Prepare target for immediate coordinate sending
+                    try:
+                        bbox = best_target.get('bbox', [])
+                        conf_val = float(best_target.get('confidence', 0.0))
+
+                        if bbox and len(bbox) >= 4:
+                            x1, y1, x2, y2 = bbox[:4]
+                            predictions_for_sending = [{
+                                "bbox": [x1, y1, x2, y2],
+                                "confidence": conf_val
+                            }]
+                            print(f"📤 Auto-send target prepared: {predictions_for_sending}")
+                    except Exception as e:
+                        print(f"❌ Failed to prepare predictions_for_sending: {e}")
+                        predictions_for_sending = []
 
                 try:
                     best_bbox = best_target.get('bbox', None) if best_target else None
@@ -2361,6 +2412,13 @@ class PipelineRunner:
                             print(f"[OTHER] {obj['class_name']} at {obj['bbox']}")
                 except Exception as e:
                     print(f"[Orbbec] ❌ box update error: {e}")
+
+                    if best_bbox:
+                        print(f"[TARGET] {product_name} at {best_bbox}")
+
+                    if best_target and other_predictions:
+                        for obj in other_predictions:
+                            print(f"[OTHER] {obj['class_name']} at {obj['bbox']}")
 
                 target_found = best_target is not None
                 target_detected_successfully = target_found
@@ -2430,6 +2488,14 @@ class PipelineRunner:
                             coord_status_label.setStyleSheet(
                                 "font-size: 13px; color: #FF3344; padding: 6px 10px; background-color: #1A0508; border-radius: 0px; font-weight: 800; font-family: Consolas;")
 
+                    try:
+                        if manager.thread is not None:
+                            manager.thread.trigger_was_used = False
+                            manager.thread.trigger_enter_time = None
+                            print("[VERIFY] Trigger state reset after target detected")
+                    except Exception as e:
+                        print(f"[VERIFY] Failed to reset trigger state: {e}")
+
                     show_results()
                     verify_btn.setEnabled(True)
                     retry_btn.setEnabled(False)
@@ -2463,6 +2529,8 @@ class PipelineRunner:
                 show_results()
                 verify_btn.setEnabled(False)
                 retry_btn.setEnabled(True)
+                disable_mainpage_start_trigger()
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_retry_hand_trigger, state="idle")
 
             except Exception as e:
                 _set_detection_header("✕  DETECTION ERROR", "#FF3344", "#1A0508")
@@ -2475,15 +2543,22 @@ class PipelineRunner:
                 show_results()
                 verify_btn.setEnabled(False)
                 retry_btn.setEnabled(True)
+                disable_mainpage_start_trigger()
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_retry_hand_trigger, state="idle")
                 import traceback
                 traceback.print_exc()
-
-        start_detection_capture()
 
         def on_retry_detection():
             nonlocal manual_retry_count, target_detected_successfully, auto_retry_count
             nonlocal predictions_for_sending, detection_results, output_path, captured_image_path
 
+            try:
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
+                print("[RETRY] Hand retry trigger cleared before manual retry")
+            except Exception as e:
+                print(f"[RETRY] Failed to clear retry trigger: {e}")
+
+            disable_mainpage_start_trigger()
             cleanup_capture_runner()
 
             try:
@@ -2506,7 +2581,21 @@ class PipelineRunner:
             detection_label.clear()
             start_detection_capture(f"↺ Manual retry. ({manual_retry_count})")
 
+        def on_retry_hand_trigger():
+            try:
+                if not retry_btn.isEnabled():
+                    print("[RETRY] Retry not available")
+                    return
+
+                disable_mainpage_start_trigger()
+
+                print("[RETRY] Hand trigger detected -> retry")
+                on_retry_detection()
+            except Exception as e:
+                print(f"[RETRY] Trigger error: {e}")
+
         def on_verify():
+
             print("🔍 [DEBUG] on_verify START")
 
             nonlocal captured_image_path, detection_results, output_path, target_detected_successfully, orbbec_thread
@@ -2552,6 +2641,21 @@ class PipelineRunner:
                     manager.thread.trigger_enter_time = None
             except Exception as e:
                 print(f"⚠️ Error resetting camera state: {e}")
+
+            try:
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
+                print("[VERIFY] Cleared assembly verify trigger before opening result page")
+            except Exception as e:
+                print(f"[VERIFY] Failed to clear assembly verify trigger: {e}")
+
+            try:
+                manager.detach_live_view(update_orbbec_view)
+            except Exception:
+                pass
+
+            verify_btn.setEnabled(False)
+            retry_btn.setEnabled(False)
+
             print("✅ [DEBUG] Closing main detection dialog")
             main_dialog_ref = dialog
             main_dialog_ref.accept()
@@ -2811,6 +2915,7 @@ class PipelineRunner:
 
             print("🔍 [DEBUG] on_verify END")
 
+        start_detection_capture()
         retry_btn.clicked.connect(on_retry_detection)
         verify_btn.clicked.connect(on_verify)
 
@@ -2830,12 +2935,7 @@ class PipelineRunner:
             except Exception:
                 pass
 
-            try:
-                if parent_widget and hasattr(parent_widget, "ignore_orbbec_start_trigger"):
-                    parent_widget.ignore_orbbec_start_trigger = False
-                    print("[ASSEMBLY RESULT] MainPage start trigger restored in cleanup")
-            except Exception as e:
-                print(f"[ASSEMBLY RESULT] Cleanup restore failed: {e}")
+            restore_mainpage_start_trigger()
 
         dialog.finished.connect(_cleanup_dialog)
 

@@ -3,8 +3,6 @@ import random
 import threading
 import socket
 import time
-import queue
-import re
 from datetime import datetime, timedelta
 from PySide6.QtWidgets import (
     QMainWindow, QFileDialog, QWidget,
@@ -223,17 +221,21 @@ class DeepLearningPage(QWidget):
             # Capture folder now depends on selected mode
             self.capture_folder = os.path.join(dataset_root, self.capture_mode)
 
+            # NEW: Create a separate folder for auto capture & predict images
+            self.auto_capture_folder = os.path.join(recipe_folder, "auto_captured_predictions")
+
             # Cropped save folder remains the same
             self.labeling_path = os.path.join(recipe_folder, "Annotation")
 
             # Create folders if they don't exist
-            for folder in [dataset_root, self.capture_folder, self.labeling_path]:
+            for folder in [dataset_root, self.capture_folder, self.auto_capture_folder, self.labeling_path]:
                 if folder:
                     os.makedirs(folder, exist_ok=True)
 
             print(f"Recipe: {config_manager.current_recipe}")
             print(f"Capture mode: {self.capture_mode}")
             print(f"Capture folder: {self.capture_folder}")
+            print(f"Auto capture folder: {self.auto_capture_folder}")
 
             # Update UI display
             if hasattr(self, 'recipe_label'):
@@ -242,6 +244,7 @@ class DeepLearningPage(QWidget):
                 )
         else:
             self.capture_folder = None
+            self.auto_capture_folder = None
             self.labeling_path = None
             print("No recipe selected - waiting for user to select a recipe")
 
@@ -1201,7 +1204,7 @@ class DeepLearningPage(QWidget):
     # ---------- Training Functions ----------
 
     def train_model(self):
-        """Simplified training with auto setup"""
+        """Simplified training with auto setup and cleanup option"""
         if self.is_training:
             self.show_notification("Training already in progress", "warning")
             return
@@ -1218,6 +1221,31 @@ class DeepLearningPage(QWidget):
             self.show_notification(f"No dataset folder for {recipe_name}", "error")
             return
 
+        # ========== ADD CLASS VALIDATION WARNING HERE ==========
+        # Check for non-contiguous classes before training
+        valid_classes = self.get_valid_classes_from_annotations()
+        if valid_classes:
+            max_class = max(valid_classes)
+            expected_classes = set(range(max_class + 1))
+            missing_classes = expected_classes - valid_classes
+
+            if missing_classes:
+                msg = f"⚠️ WARNING: Class ID issue detected!\n\n"
+                msg += f"Your annotations use classes: {sorted(valid_classes)}\n"
+                msg += f"Missing classes: {sorted(missing_classes)}\n\n"
+                msg += f"This means the model may still try to detect class {sorted(missing_classes)[0]} even though you never annotated it.\n\n"
+                msg += f"Recommendations:\n"
+                msg += f"• Renumber your classes to be contiguous starting from 0\n"
+                msg += f"• Example: If you have classes 0 and 2, rename class 2 to class 1\n\n"
+                msg += f"The system will filter out invalid class predictions.\n\n"
+                msg += f"Continue training anyway?"
+
+                reply = QMessageBox.question(self, "Class ID Warning", msg,
+                                             QMessageBox.Yes | QMessageBox.No)
+                if reply != QMessageBox.Yes:
+                    return
+        # =====================================================
+
         # Get recipe folder for class mapping
         recipe_folder = config_manager.get_current_recipe_folder()
         recipe_folder1 = os.path.join(recipe_folder, "Annotation")
@@ -1225,9 +1253,35 @@ class DeepLearningPage(QWidget):
         # Use recipe folder as labeling path
         labeling_path = recipe_folder1
 
-        # Check if auto split needed
+        # Check if there are existing training files and offer cleanup
         train_images_dir = os.path.join(folder_path, "images", "train")
-        if not os.path.exists(train_images_dir):
+        if os.path.exists(train_images_dir):
+            reply = QMessageBox.question(
+                self,
+                "Existing Training Data",
+                "Previous training data found.\n\n"
+                "Do you want to:\n"
+                "• Yes - Clean up old data and train fresh\n"
+                "• No - Use existing data\n"
+                "• Cancel - Stop training",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+            )
+
+            if reply == QMessageBox.Cancel:
+                return
+            elif reply == QMessageBox.Yes:
+                # Force release any open file handles first
+                self.force_release_file_handles()
+                # Small delay to let handles close
+                QApplication.processEvents()
+                time.sleep(0.1)
+                # Clean up old training data
+                if not self.cleanup_training_data(folder_path):
+                    return  # Cleanup failed or cancelled
+
+        # Now check if dataset needs organization (no images in train folder)
+        train_images_dir = os.path.join(folder_path, "images", "train")
+        if not os.path.exists(train_images_dir) or len(os.listdir(train_images_dir)) == 0:
             reply = QMessageBox.question(
                 self, "Auto Setup",
                 "Dataset needs organization. Auto-setup for YOLO training?",
@@ -1239,7 +1293,7 @@ class DeepLearningPage(QWidget):
 
             self.status_label.setText("Setting up dataset...")
 
-            # FIXED: Call the correct method with proper parameters
+            # Call the correct method with proper parameters
             success = self.viewer.auto_split_and_generate_yaml(folder_path, labeling_path)
 
             if not success:
@@ -1370,6 +1424,15 @@ class DeepLearningPage(QWidget):
             except:
                 pass
 
+            # IMPORTANT: Reload the model after successful training
+            self.status_label.setText("Reloading new model...")
+            model_reloaded = self.reload_model_after_training()
+
+            if model_reloaded:
+                message += "\n\n✅ New model loaded and ready for predictions!"
+            else:
+                message += "\n\n⚠️ Model trained but could not auto-reload. Please restart the application."
+
             # Show success message
             success_dialog = QMessageBox(self)
             success_dialog.setWindowTitle("🎉 Training Complete!")
@@ -1381,7 +1444,7 @@ class DeepLearningPage(QWidget):
                 QMessageBox.Open
             )
 
-            success_dialog.button(QMessageBox.Ok).setText("ok")
+            success_dialog.button(QMessageBox.Ok).setText("OK")
             success_dialog.button(QMessageBox.Open).setText("Open Results")
 
             if success_dialog.exec() == QMessageBox.Open:
@@ -1392,154 +1455,449 @@ class DeepLearningPage(QWidget):
                     if os.path.exists(run_dir):
                         os.startfile(run_dir)
 
-            self.show_notification("Training completed successfully!", "success")
+            self.show_notification("Training completed and model reloaded!", "success")
         else:
             QMessageBox.critical(self, "Training Failed", message)
             self.show_notification("Training failed", "error")
 
-    def run_training_with_monitoring(self, yaml_path, epochs, batch_size, model_name, save_dir, recipe_name):
-        """Run YOLOv11 training - FORCE save to recipe's yolo_model folder"""
+    def reload_model_after_training(self):
+        """Force reload the latest model after training"""
         try:
             from ultralytics import YOLO
+
+            config_manager = ConfigManager()
+            if not config_manager.current_recipe:
+                return False
+
+            # Get the yolo_model folder
+            models_folder = config_manager.get_current_yolo_model_folder()
+
+            print(f"Looking for models in: {models_folder}")  # DEBUG
+
+            if not os.path.exists(models_folder):
+                print(f"Models folder not found: {models_folder}")
+                return False
+
+            # Find all .pt files
+            model_files = []
+            for root, dirs, files in os.walk(models_folder):
+                for file in files:
+                    if file.lower().endswith('.pt') and 'temp' not in file.lower() and 'partial' not in file.lower():
+                        full_path = os.path.join(root, file)
+                        model_files.append(full_path)
+                        print(f"Found model: {full_path}")  # DEBUG
+
+            if not model_files:
+                print("No model files found to reload")
+                return False
+
+            # Sort by modification time (newest first)
+            model_files.sort(key=os.path.getmtime, reverse=True)
+            latest_model = model_files[0]
+
+            print(f"Latest model: {latest_model}")  # DEBUG
+            print(f"Model modified: {datetime.fromtimestamp(os.path.getmtime(latest_model))}")  # DEBUG
+
+            # Force clear the old model
+            if hasattr(self, 'current_model'):
+                print("Clearing old model from memory...")  # DEBUG
+                del self.current_model
+
+            # Force garbage collection
+            import gc
+            gc.collect()
+
+            print(f"Loading new model: {latest_model}")  # DEBUG
+
+            # Load the new model
+            self.current_model = YOLO(latest_model)
+            self.current_model_path = latest_model
+
+            # Update model info display
             import torch
-            import shutil
-
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            self.training_signals.progress.emit(0, f"Initializing training on {device}...", "Starting...")
+            model_size = os.path.getsize(latest_model) / (1024 * 1024)
 
-            # Create timestamped folder in yolo_model
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            run_name = f"train_{timestamp}"
+            self.model_info.setText(
+                f"✅ Model reloaded after training\n"
+                f"Name: {os.path.basename(latest_model)}\n"
+                f"Size: {model_size:.1f} MB\n"
+                f"Device: {device}\n"
+                f"Classes: {len(self.current_model.names) if hasattr(self.current_model, 'names') else 'Unknown'}"
+            )
 
-            # DIRECT SAVE PATH - No "runs/detect" nonsense
-            direct_save_dir = os.path.join(save_dir, run_name)
-            os.makedirs(direct_save_dir, exist_ok=True)
-
-            # Create weights folder inside our direct path
-            direct_weights_dir = os.path.join(direct_save_dir, "weights")
-            os.makedirs(direct_weights_dir, exist_ok=True)
-
-            model = YOLO(model_name)
-            self.training_signals.progress.emit(5, f"Model {model_name} loaded", "Preparing dataset...")
-
-            start_time = datetime.now()
-
-            try:
-                # IMPORTANT: Train to a TEMP location first
-                temp_project = os.path.join(save_dir, "_temp_training")
-                os.makedirs(temp_project, exist_ok=True)
-
-                # In the run_training_with_monitoring method, update the model.train() call:
-
-                results = model.train(
-                    data=yaml_path,
-                    epochs=epochs,
-                    batch=batch_size,
-                    device=device,
-                    project=save_dir,
-                    name=run_name,
-                    exist_ok=True,
-                    verbose=True,
-                    save=True,
-                    save_period=min(10, epochs // 10),
-                    plots=True,
-                    workers=0,
-                    patience=50,  # Early stopping patience
-                    seed=42,
-
-                    # --- ENHANCED PARAMETERS FOR BETTER SPECIFICITY ---
-                    hsv_h=0.0,  # Keep as 0.0 - no color augmentation
-                    hsv_s=0.0,  # Keep as 0.0 - no saturation changes
-                    hsv_v=0.1,  # REDUCED from 0.2 - less brightness variation
-                    degrees=0.0,  # Keep as 0.0 - no rotation
-                    translate=0.01,  # REDUCED from 0.05 - less translation
-                    scale=0.0,  # ADDED - minimal scaling (10%)
-                    shear=0.0,  # ADDED - no shearing
-                    perspective=0.0,  # ADDED - no perspective distortion
-                    flipud=0.0,  # Keep as 0.0
-                    fliplr=0.0,  # Keep as 0.0
-                    mosaic=0.0,  # ADDED - disable mosaic augmentation
-                    mixup=0.0,  # ADDED - disable mixup augmentation
-                    copy_paste=0.0,  # ADDED - disable copy-paste augmentation
-
-                    # Add these for better precision
-                    overlap_mask=False,  # For segmentation, but works with detection too
-                    mask_ratio=4,  # Not directly applicable but keep
-                    dropout=0.1,  # ADDED - helps prevent overfitting to wrong features
-
-                    # Increase confidence threshold during training (optional)
-                    # This makes the model more selective
-                    conf=0.3,  # Minimum confidence threshold
-
-                    # Use focal loss for harder examples
-                    fl_gamma=1.5,  # Focal loss gamma - focuses on hard examples
-
-                    # Class weights if you have class imbalance
-                    # class_weights={0: 1.0, 1: 1.5}  # Example
-                )
-
-                # AFTER TRAINING: Manually move files to desired location
-                temp_run_dir = os.path.join(temp_project, run_name)
-                if os.path.exists(temp_run_dir):
-                    # Move everything from temp to our desired location
-                    for item in os.listdir(temp_run_dir):
-                        src = os.path.join(temp_run_dir, item)
-                        dst = os.path.join(direct_save_dir, item)
-
-                        if os.path.isdir(src):
-                            if os.path.exists(dst):
-                                shutil.rmtree(dst)
-                            shutil.copytree(src, dst)
-                        else:
-                            shutil.copy2(src, dst)
-
-                    # Clean up temp directory
-                    shutil.rmtree(temp_project)
-
-            except KeyboardInterrupt:
-                results = None
-                # Clean up temp on interrupt
-                if os.path.exists(temp_project):
-                    shutil.rmtree(temp_project, ignore_errors=True)
-
-            if self.is_training and results:
-                self.training_signals.progress.emit(100, "Training completed!", "Processing final results...")
-
-                # Check for best.pt in our DIRECT location
-                best_model_path = os.path.join(direct_weights_dir, "best.pt")
-
-                if os.path.exists(best_model_path):
-                    # Create easy-access copy
-                    easy_access_name = f"best_{recipe_name}_{timestamp}.pt"
-                    easy_access_path = os.path.join(save_dir, easy_access_name)
-                    shutil.copy2(best_model_path, easy_access_path)
-
-                    success_message = (
-                        f"✅ Training completed!\n\n"
-                        f"📁 Recipe: {recipe_name}\n"
-                        f"📁 Model location: {direct_save_dir}\n"
-                        f"📊 Best model: {easy_access_name}\n"
-                        f"📏 File size: {os.path.getsize(easy_access_path) / 1024 / 1024:.1f} MB\n"
-                        f"⏱ Training time: {str(datetime.now() - start_time).split('.')[0]}"
-                    )
-                else:
-                    # Fallback: check if YOLO saved elsewhere
-                    success_message = f"✅ Training completed!\nCheck folder: {direct_save_dir}"
-
-                self.training_signals.finished.emit(True, success_message)
-
-            elif not self.is_training:
-                self.training_signals.finished.emit(False, "Training cancelled")
-            else:
-                self.training_signals.finished.emit(False, "Training completed but no results")
+            self.show_notification(f"Model reloaded: {os.path.basename(latest_model)}", "success")
+            return True
 
         except Exception as e:
+            print(f"Error reloading model: {e}")
             import traceback
-            error_msg = f"Training failed:\n{str(e)}"
-            print(traceback.format_exc())
-            self.training_signals.finished.emit(False, error_msg)
-        finally:
-            self.is_training = False
+            traceback.print_exc()
+            return False
+
+    def cleanup_training_data(self, dataset_folder):
+        """
+        Clean up all training-generated files and folders while preserving
+        original captured images in positive/negative/empty folders.
+
+        Args:
+            dataset_folder: Path to the YOLO dataset folder (contains images/, labels/, data.yaml)
+        """
+        try:
+            import shutil
+            import time
+            from pathlib import Path
+
+            print(f"Cleaning up training data in: {dataset_folder}")
+
+            # First, clear any references to these folders in the viewer
+            if hasattr(self.viewer, 'image_files'):
+                # Filter out any images that might be in the train/val folders
+                original_count = len(self.viewer.image_files)
+                self.viewer.image_files = [
+                    f for f in self.viewer.image_files
+                    if '\\images\\train\\' not in f and '\\images\\val\\' not in f
+                ]
+                if len(self.viewer.image_files) < original_count:
+                    print(f"  Removed {original_count - len(self.viewer.image_files)} train/val images from viewer")
+
+                # Reset current index if needed
+                if self.current_index >= len(self.viewer.image_files):
+                    self.current_index = -1
+                    if self.viewer.image_files:
+                        self.current_index = 0
+                        self.load_current_image()
+
+            # Clear boxes in viewer to release any references
+            if hasattr(self.viewer, 'boxes'):
+                self.viewer.boxes.clear()
+                self.viewer.update()
+
+            # ========== CLEAR THE LOADED MODEL FROM MEMORY ==========
+            # Add this block RIGHT HERE - before identifying files to remove
+            if hasattr(self, 'current_model'):
+                print("  Clearing loaded model from memory")
+                del self.current_model
+                self.current_model = None
+                self.current_model_path = None
+
+                # Update UI
+                if hasattr(self, 'model_info'):
+                    self.model_info.setText("No model loaded (will reload after training)")
+
+                import gc
+                gc.collect()
+            # ========================================================
+
+            # Files and folders to remove
+            items_to_remove = []
+
+            # Remove data.yaml if it exists
+            data_yaml = os.path.join(dataset_folder, "data.yaml")
+            if os.path.exists(data_yaml):
+                items_to_remove.append(data_yaml)
+                print(f"  Will remove: data.yaml")
+
+            # Remove classes.txt if it exists
+            classes_txt = os.path.join(dataset_folder, "classes.txt")
+            if os.path.exists(classes_txt):
+                items_to_remove.append(classes_txt)
+                print(f"  Will remove: classes.txt")
+
+            # Remove images/ and labels/ folders (these contain train/val splits)
+            images_dir = os.path.join(dataset_folder, "images")
+            if os.path.exists(images_dir):
+                items_to_remove.append(images_dir)
+                print(f"  Will remove: images/ folder")
+
+            labels_dir = os.path.join(dataset_folder, "labels")
+            if os.path.exists(labels_dir):
+                items_to_remove.append(labels_dir)
+                print(f"  Will remove: labels/ folder")
+
+            # Remove any other generated files (like README.txt)
+            readme_txt = os.path.join(dataset_folder, "README.txt")
+            if os.path.exists(readme_txt):
+                items_to_remove.append(readme_txt)
+                print(f"  Will remove: README.txt")
+
+            # Ask for confirmation
+            if not items_to_remove:
+                self.show_notification("No training data to clean up", "info")
+                return False
+
+            # Build confirmation message
+            msg = f"This will remove the following generated files/folders:\n\n"
+            for item in items_to_remove:
+                msg += f"• {os.path.basename(item)}\n"
+            msg += f"\nOriginal images in positive/negative/empty folders will be preserved.\n"
+            msg += f"\nProceed with cleanup?"
+
+            reply = QMessageBox.question(
+                self,
+                "Confirm Cleanup",
+                msg,
+                QMessageBox.Yes | QMessageBox.No
+            )
+
+            if reply != QMessageBox.Yes:
+                return False
+
+            # Function to retry deletion with delay
+            def delete_with_retry(path, max_retries=3, delay=0.5):
+                for attempt in range(max_retries):
+                    try:
+                        if os.path.isdir(path):
+                            # Change permissions first
+                            os.chmod(path, 0o777)
+                            shutil.rmtree(path, ignore_errors=False)
+                        else:
+                            os.chmod(path, 0o777)
+                            os.remove(path)
+                        return True
+                    except PermissionError as e:
+                        if attempt < max_retries - 1:
+                            print(f"  Retry {attempt + 1}/{max_retries} for {path}...")
+                            time.sleep(delay)
+                            # Force garbage collection
+                            import gc
+                            gc.collect()
+                        else:
+                            print(f"  ✗ Failed to delete after {max_retries} attempts: {e}")
+                            raise
+                return False
+
+            # Perform cleanup with retries
+            success_count = 0
+            for item in items_to_remove:
+                try:
+                    # First try to delete contents if it's a directory
+                    if os.path.isdir(item):
+                        # Try to delete subdirectories first
+                        for root, dirs, files in os.walk(item, topdown=False):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                try:
+                                    os.chmod(file_path, 0o777)
+                                except:
+                                    pass
+                            for dir in dirs:
+                                dir_path = os.path.join(root, dir)
+                                try:
+                                    os.chmod(dir_path, 0o777)
+                                except:
+                                    pass
+
+                    # Now delete the main item
+                    if delete_with_retry(item):
+                        success_count += 1
+                        print(f"  ✓ Removed: {os.path.basename(item)}")
+                    else:
+                        print(f"  ✗ Failed to remove: {os.path.basename(item)}")
+
+                except Exception as e:
+                    print(f"  ✗ Failed to remove {os.path.basename(item)}: {e}")
+
+            # Also clear any image_boxes references to train/val images
+            if hasattr(self, 'image_boxes'):
+                train_val_keys = [
+                    k for k in self.image_boxes.keys()
+                    if '\\images\\train\\' in k or '\\images\\val\\' in k
+                ]
+                for key in train_val_keys:
+                    del self.image_boxes[key]
+                if train_val_keys:
+                    print(f"  Removed {len(train_val_keys)} train/val image references from memory")
+
+            # Clear the class mapping to force regeneration
+            if hasattr(self.viewer, 'label_to_id'):
+                self.viewer.label_to_id.clear()
+                self.viewer.next_class_id = 0
+                print(f"  Cleared class mapping")
+
+            if success_count > 0:
+                self.show_notification(f"Cleaned up {success_count} items successfully!", "success")
+                return True
+            else:
+                self.show_notification("Cleanup failed - please close Windows Explorer if it's open to that folder",
+                                       "error")
+                return False
+
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_notification(
+                f"Cleanup failed: {str(e)}\n\nPlease close any Explorer windows open to the dataset folder", "error")
+            return False
+
+    def force_release_file_handles(self):
+        """Force release any open file handles"""
+        try:
+            import gc
+
+            # Clear any references in the viewer
+            if hasattr(self.viewer, 'pixmap'):
+                self.viewer.pixmap = None
+                self.viewer.scaled_pixmap = None
+
+            if hasattr(self.viewer, 'boxes'):
+                self.viewer.boxes.clear()
+
+            # Force garbage collection
+            gc.collect()
+
+            # Clear any image references
+            if hasattr(self, 'image_path'):
+                self.image_path = None
+
+            print("  Released file handles")
+        except Exception as e:
+            print(f"  Error releasing handles: {e}")
+
+    # def run_training_with_monitoring(self, yaml_path, epochs, batch_size, model_name, save_dir, recipe_name):
+    #     """Run YOLOv11 training - FORCE save to recipe's yolo_model folder"""
+    #     try:
+    #         from ultralytics import YOLO
+    #         import torch
+    #         import shutil
+    #
+    #         device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    #         self.training_signals.progress.emit(0, f"Initializing training on {device}...", "Starting...")
+    #
+    #         # Create timestamped folder in yolo_model
+    #         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    #         run_name = f"train_{timestamp}"
+    #
+    #         # DIRECT SAVE PATH - No "runs/detect" nonsense
+    #         direct_save_dir = os.path.join(save_dir, run_name)
+    #         os.makedirs(direct_save_dir, exist_ok=True)
+    #
+    #         # Create weights folder inside our direct path
+    #         direct_weights_dir = os.path.join(direct_save_dir, "weights")
+    #         os.makedirs(direct_weights_dir, exist_ok=True)
+    #
+    #         model = YOLO(model_name)
+    #         self.training_signals.progress.emit(5, f"Model {model_name} loaded", "Preparing dataset...")
+    #
+    #         start_time = datetime.now()
+    #
+    #         try:
+    #             # IMPORTANT: Train to a TEMP location first
+    #             temp_project = os.path.join(save_dir, "_temp_training")
+    #             os.makedirs(temp_project, exist_ok=True)
+    #
+    #             # In the run_training_with_monitoring method, update the model.train() call:
+    #
+    #             results = model.train(
+    #                 data=yaml_path,
+    #                 epochs=epochs,
+    #                 batch=batch_size,
+    #                 device=device,
+    #                 project=save_dir,
+    #                 name=run_name,
+    #                 exist_ok=True,
+    #                 verbose=True,
+    #                 save=True,
+    #                 save_period=min(10, epochs // 10),
+    #                 plots=True,
+    #                 workers=0,
+    #                 patience=50,  # Early stopping patience
+    #                 seed=42,
+    #
+    #                 # --- ENHANCED PARAMETERS FOR BETTER SPECIFICITY ---
+    #                 hsv_h=0.0,  # Keep as 0.0 - no color augmentation
+    #                 hsv_s=0.0,  # Keep as 0.0 - no saturation changes
+    #                 hsv_v=0.1,  # REDUCED from 0.2 - less brightness variation
+    #                 degrees=0.0,  # Keep as 0.0 - no rotation
+    #                 translate=0.01,  # REDUCED from 0.05 - less translation
+    #                 scale=0.0,  # ADDED - minimal scaling (10%)
+    #                 shear=0.0,  # ADDED - no shearing
+    #                 perspective=0.0,  # ADDED - no perspective distortion
+    #                 flipud=0.0,  # Keep as 0.0
+    #                 fliplr=0.0,  # Keep as 0.0
+    #                 mosaic=0.0,  # ADDED - disable mosaic augmentation
+    #                 mixup=0.0,  # ADDED - disable mixup augmentation
+    #                 copy_paste=0.0,  # ADDED - disable copy-paste augmentation
+    #
+    #                 # Add these for better precision
+    #                 overlap_mask=False,  # For segmentation, but works with detection too
+    #                 mask_ratio=4,  # Not directly applicable but keep
+    #                 dropout=0.1,  # ADDED - helps prevent overfitting to wrong features
+    #
+    #                 # Increase confidence threshold during training (optional)
+    #                 # This makes the model more selective
+    #                 conf=0.3,  # Minimum confidence threshold
+    #
+    #                 # Use focal loss for harder examples
+    #                 fl_gamma=1.5,  # Focal loss gamma - focuses on hard examples
+    #
+    #                 # Class weights if you have class imbalance
+    #                 # class_weights={0: 1.0, 1: 1.5}  # Example
+    #             )
+    #
+    #             # AFTER TRAINING: Manually move files to desired location
+    #             temp_run_dir = os.path.join(temp_project, run_name)
+    #             if os.path.exists(temp_run_dir):
+    #                 # Move everything from temp to our desired location
+    #                 for item in os.listdir(temp_run_dir):
+    #                     src = os.path.join(temp_run_dir, item)
+    #                     dst = os.path.join(direct_save_dir, item)
+    #
+    #                     if os.path.isdir(src):
+    #                         if os.path.exists(dst):
+    #                             shutil.rmtree(dst)
+    #                         shutil.copytree(src, dst)
+    #                     else:
+    #                         shutil.copy2(src, dst)
+    #
+    #                 # Clean up temp directory
+    #                 shutil.rmtree(temp_project)
+    #
+    #         except KeyboardInterrupt:
+    #             results = None
+    #             # Clean up temp on interrupt
+    #             if os.path.exists(temp_project):
+    #                 shutil.rmtree(temp_project, ignore_errors=True)
+    #
+    #         if self.is_training and results:
+    #             self.training_signals.progress.emit(100, "Training completed!", "Processing final results...")
+    #
+    #             # Check for best.pt in our DIRECT location
+    #             best_model_path = os.path.join(direct_weights_dir, "best.pt")
+    #
+    #             if os.path.exists(best_model_path):
+    #                 # Create easy-access copy
+    #                 easy_access_name = f"best_{recipe_name}_{timestamp}.pt"
+    #                 easy_access_path = os.path.join(save_dir, easy_access_name)
+    #                 shutil.copy2(best_model_path, easy_access_path)
+    #
+    #                 success_message = (
+    #                     f"✅ Training completed!\n\n"
+    #                     f"📁 Recipe: {recipe_name}\n"
+    #                     f"📁 Model location: {direct_save_dir}\n"
+    #                     f"📊 Best model: {easy_access_name}\n"
+    #                     f"📏 File size: {os.path.getsize(easy_access_path) / 1024 / 1024:.1f} MB\n"
+    #                     f"⏱ Training time: {str(datetime.now() - start_time).split('.')[0]}"
+    #                 )
+    #             else:
+    #                 # Fallback: check if YOLO saved elsewhere
+    #                 success_message = f"✅ Training completed!\nCheck folder: {direct_save_dir}"
+    #
+    #             self.training_signals.finished.emit(True, success_message)
+    #
+    #         elif not self.is_training:
+    #             self.training_signals.finished.emit(False, "Training cancelled")
+    #         else:
+    #             self.training_signals.finished.emit(False, "Training completed but no results")
+    #
+    #     except Exception as e:
+    #         import traceback
+    #         error_msg = f"Training failed:\n{str(e)}"
+    #         print(traceback.format_exc())
+    #         self.training_signals.finished.emit(False, error_msg)
+    #     finally:
+    #         self.is_training = False
 
     def get_training_save_path(self, recipe_name):
         """Get training save path - directly to recipe's yolo_model folder"""
@@ -1558,11 +1916,21 @@ class DeepLearningPage(QWidget):
         return yolo_model_folder  # Returns: recipes\{current_recipe}\yolo_model
 
     def run_training_with_monitoring(self, yaml_path, epochs, batch_size, model_name, save_dir, recipe_name):
-        """Run YOLOv11 training - SAVE to recipe's yolo_model folder, NOT runs/"""
+        """Run YOLOv11 training - force only your classes"""
         try:
             from ultralytics import YOLO
             import torch
             import os
+
+            # Read the data.yaml to get number of classes
+            import yaml
+            with open(yaml_path, 'r') as f:
+                data_config = yaml.safe_load(f)
+
+            num_classes = data_config.get('nc', 0)
+            class_names = data_config.get('names', [])
+
+            print(f"Training with {num_classes} classes: {class_names}")
 
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             self.training_signals.progress.emit(0, f"Initializing training on {device}...", "Starting...")
@@ -1573,40 +1941,73 @@ class DeepLearningPage(QWidget):
 
             # OUR TARGET: recipes/{current_recipe}/yolo_model/train_{timestamp}/
             our_target_dir = os.path.join(save_dir, train_folder)
-
-            # Create the directory
             os.makedirs(our_target_dir, exist_ok=True)
 
             print(f"🚀 Target save location: {our_target_dir}")
-            print(f"📁 Should NOT be in: {os.path.join(os.getcwd(), 'runs', 'detect')}")
 
             # Load model
             model = YOLO(model_name)
-            self.training_signals.progress.emit(5, f"Model {model_name} loaded", "Preparing dataset...")
+
+            # CRITICAL: Override the model's number of classes
+            # This ensures the model only predicts your classes
+            if hasattr(model, 'model') and hasattr(model.model, 'model'):
+                # For YOLOv8/v11
+                nc = model.model.model[-1].nc
+                if nc != num_classes:
+                    print(f"⚠️ Adjusting model classes from {nc} to {num_classes}")
+                    model.model.model[-1].nc = num_classes
+                    # Reinitialize the classification head
+                    from ultralytics.nn.tasks import attempt_load_one_weight
+                    model.model.model[-1].reset_parameters()
+
+            self.training_signals.progress.emit(5, f"Model {model_name} loaded with {num_classes} classes",
+                                                "Preparing dataset...")
 
             start_time = datetime.now()
 
             try:
-                # CRITICAL: These parameters force YOLO to save to OUR location
+                # Train with explicit class count
                 results = model.train(
                     data=yaml_path,
                     epochs=epochs,
                     batch=batch_size,
                     device=device,
-
-                    # ==== THESE CONTROL SAVE LOCATION ====
-                    project=save_dir,  # Base: recipes/{recipe}/yolo_model
-                    name=train_folder,  # Subfolder: train_{timestamp}
-                    save_dir=our_target_dir,  # Explicit: Force save here
-
-                    # Prevent YOLO from using its defaults
+                    project=save_dir,
+                    name=train_folder,
                     exist_ok=True,
-                    verbose=True,  # See where it's saving
+                    verbose=True,
                     save=True,
                     plots=True,
+
+                    # CRITICAL: Specify the classes to train on
+                    # This ensures only your classes are used
+                    classes=list(range(num_classes)),  # Only train on classes 0 to num_classes-1
+
+                    # Other parameters
+                    workers=0,
+                    patience=50,
+                    seed=42,
+
+                    # Minimal augmentation
+                    hsv_h=0.0,
+                    hsv_s=0.0,
+                    hsv_v=0.1,
+                    degrees=0.0,
+                    translate=0.01,
+                    scale=0.0,
+                    shear=0.0,
+                    perspective=0.0,
+                    flipud=0.0,
+                    fliplr=0.0,
+                    mosaic=0.0,
+                    mixup=0.0,
+                    copy_paste=0.0,
+                    dropout=0.1,
+                    conf=0.3,
+                    fl_gamma=1.5,
                 )
 
-                print(f"✅ Training complete. Check if saved to: {our_target_dir}")
+                print(f"✅ Training complete. Model trained on {num_classes} classes")
 
             except KeyboardInterrupt:
                 results = None
@@ -1618,9 +2019,12 @@ class DeepLearningPage(QWidget):
                 # Verify save location
                 verification = self._verify_save_location(our_target_dir, save_dir)
 
-                success_message = verification
+                # Add class info to success message
+                verification += f"\n\n📊 Model trained on {num_classes} classes:"
+                for i, name in enumerate(class_names if isinstance(class_names, list) else []):
+                    verification += f"\n   {i}: {name}"
 
-                self.training_signals.finished.emit(True, success_message)
+                self.training_signals.finished.emit(True, verification)
 
             elif not self.is_training:
                 self.training_signals.finished.emit(False, "Training cancelled")
@@ -1900,6 +2304,15 @@ class DeepLearningPage(QWidget):
                     self.prediction_signals.finished.emit(False, "No model loaded", [])
                     return
 
+            # Get valid classes from annotations
+            valid_classes = self.get_valid_classes_from_annotations()
+
+            # If no valid classes found, try to get from model's expected classes
+            if not valid_classes:
+                # Assume classes 0 and 1 are valid (your case)
+                valid_classes = {0, 1}
+                print(f"No annotation files found, using default classes: {valid_classes}")
+
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
             if class_filter is not None:
@@ -1923,16 +2336,14 @@ class DeepLearningPage(QWidget):
             self.prediction_signals.progress.emit(70, "Processing results...")
 
             predictions = []
+            filtered_count = 0
+
             if results and len(results) > 0:
                 result = results[0]
 
                 if hasattr(result, 'boxes') and result.boxes is not None:
                     boxes = result.boxes
-
-                    if hasattr(boxes, 'xyxy') and boxes.xyxy is not None:
-                        num_detections = len(boxes.xyxy)
-                    else:
-                        num_detections = 0
+                    num_detections = len(boxes.xyxy) if hasattr(boxes, 'xyxy') else 0
 
                     for i in range(num_detections):
                         try:
@@ -1940,22 +2351,34 @@ class DeepLearningPage(QWidget):
                             conf = float(boxes.conf[i].cpu().numpy()) if boxes.conf is not None else 0.0
                             cls = int(boxes.cls[i].cpu().numpy()) if boxes.cls is not None else 0
 
-                            actual_class_name = ""
+                            # Get class name
+                            class_name = ""
                             if hasattr(result, 'names') and result.names:
-                                actual_class_name = result.names.get(cls, f"class_{cls}")
+                                class_name = result.names.get(cls, f"class_{cls}")
                             else:
-                                actual_class_name = f"class_{cls}"
+                                class_name = f"class_{cls}"
+
+                            # CRITICAL: Filter out predictions for non-existent classes
+                            if cls not in valid_classes:
+                                filtered_count += 1
+                                print(
+                                    f"⚠️ Filtering out prediction for class {cls} ({class_name}) - not in training data")
+                                continue
 
                             predictions.append({
                                 'bbox': box.tolist(),
                                 'confidence': conf,
                                 'class_id': cls,
-                                'class_name': actual_class_name,
-                                'class_name_original': actual_class_name
+                                'class_name': class_name,
+                                'class_name_original': class_name
                             })
                         except Exception as e:
                             print(f"Error processing detection {i}: {e}")
                             continue
+
+            if filtered_count > 0:
+                print(f"📊 Filtered out {filtered_count} predictions for non-existent classes")
+                print(f"✅ Kept {len(predictions)} valid predictions for classes: {valid_classes}")
 
             output_dir = os.path.join(os.path.dirname(image_path), "predictions")
             os.makedirs(output_dir, exist_ok=True)
@@ -1989,6 +2412,57 @@ class DeepLearningPage(QWidget):
             self.prediction_signals.finished.emit(False, error_msg, [])
         finally:
             self.is_predicting = False
+
+    def get_valid_classes_from_annotations(self):
+        """
+        Get set of valid class IDs from existing annotation files.
+        Returns: set of class IDs that actually have annotations
+        """
+        valid_classes = set()
+
+        if not self.capture_folder:
+            return valid_classes
+
+        # Scan all annotation files in positive, negative, empty folders
+        for folder_type in ['positive', 'negative', 'empty']:
+            # Construct the folder path
+            if self.capture_folder:
+                folder_path = self.capture_folder.replace(self.capture_mode, folder_type)
+            else:
+                continue
+
+            if not os.path.exists(folder_path):
+                continue
+
+            for file in os.listdir(folder_path):
+                if file.lower().endswith('.txt'):
+                    txt_path = os.path.join(folder_path, file)
+                    try:
+                        with open(txt_path, 'r') as f:
+                            for line in f:
+                                parts = line.strip().split()
+                                if parts:
+                                    class_id = int(parts[0])
+                                    valid_classes.add(class_id)
+                    except Exception as e:
+                        print(f"Error reading {txt_path}: {e}")
+
+        # Also check classes.txt if it exists
+        config_manager = ConfigManager()
+        if config_manager.current_recipe:
+            dataset_folder = config_manager.get_current_yolo_dataset_folder()
+            classes_txt = os.path.join(dataset_folder, "classes.txt")
+            if os.path.exists(classes_txt):
+                try:
+                    with open(classes_txt, 'r') as f:
+                        for i, line in enumerate(f.readlines()):
+                            if line.strip():
+                                valid_classes.add(i)
+                except:
+                    pass
+
+        print(f"Valid classes from annotations: {sorted(valid_classes)}")
+        return valid_classes
 
     def capture_and_predict(self):
         """Simplified capture and predict with auto model loading"""
@@ -2052,11 +2526,12 @@ class DeepLearningPage(QWidget):
         if specific_class.isChecked() and class_combo.currentIndex() >= 0:
             class_filter = class_combo.currentData()
 
-        # Capture image
+        # Capture image - SAVE TO AUTO CAPTURE FOLDER instead of capture_folder
         self.capture_predict_btn.setEnabled(False)
         self.capture_predict_btn.setText("Capturing...")
 
-        self.camera_worker = CameraWorker(self.capture_folder)
+        # Pass the auto_capture_folder to the camera worker
+        self.camera_worker = CameraWorker(self.auto_capture_folder)  # Changed from self.capture_folder
         self.camera_worker.finished.connect(
             lambda success, msg, path: self.on_capture_for_prediction(success, msg, path, class_filter)
         )
@@ -2459,7 +2934,7 @@ class DeepLearningPage(QWidget):
         self.update_tcp_messages(f"[{timestamp}] 📤 {message}")
 
     def auto_crop_and_save_on_tcp_message(self, tcp_message):
-        """Auto crop and save image when TCP receives message"""
+        """Auto crop and save image when TCP receives message, including color data"""
         if not self.is_ready_for_auto_crop():
             self.update_tcp_messages(f"[AutoCrop] ⚠️ Not ready for auto-crop")
             return False
@@ -2484,6 +2959,7 @@ class DeepLearningPage(QWidget):
                 self.update_tcp_messages(f"[AutoCrop] ❌ Invalid bounding box dimensions")
                 return False
 
+            # Crop the image
             cropped_image = image.crop((x1, y1, x2, y2))
 
             label_name = label.split()[0] if ' ' in label else label
@@ -2496,7 +2972,26 @@ class DeepLearningPage(QWidget):
                 save_path = os.path.join(self.labeling_path, filename)
                 counter += 1
 
+            # Save the cropped image
             cropped_image.save(save_path, "BMP")
+
+            # ========== NEW: Calculate and save RGB color ==========
+            # Calculate average RGB color from the cropped region
+            avg_color = self.calculate_average_color_from_crop(cropped_image)
+
+            if avg_color:
+                # Save color information to JSON file
+                self.save_cropped_image_color_data(save_path, label_name, avg_color, tcp_message)
+
+                # Update TCP messages with color info
+                r, g, b = avg_color
+                self.update_tcp_messages(f"[AutoCrop] 🎨 Average Color: RGB({r:.0f}, {g:.0f}, {b:.0f})")
+
+                # Show color in status
+                self.status_label.setText(f"Auto-saved: {filename} | Color: RGB({r:.0f}, {g:.0f}, {b:.0f})")
+            else:
+                self.update_tcp_messages(f"[AutoCrop] ⚠️ Could not calculate color from cropped image")
+            # =====================================================
 
             crop_width = x2 - x1
             crop_height = y2 - y1
@@ -2512,17 +3007,18 @@ class DeepLearningPage(QWidget):
             if config_manager.current_recipe:
                 self.update_tcp_messages(f"[AutoCrop]   Recipe: {config_manager.current_recipe}")
 
-            self.status_label.setText(f"Auto-saved: {filename}")
-
             if self.tcp_connected and self.tcp_socket:
                 try:
                     response = f"AUTO_CROP_SAVED: {filename}"
+                    if avg_color:
+                        response += f" | RGB({avg_color[0]:.0f},{avg_color[1]:.0f},{avg_color[2]:.0f})"
                     self.tcp_socket.sendall(response.encode('utf-8'))
                     self.tcp_signals.message_sent.emit(response)
                 except socket.error as e:
                     self.update_tcp_messages(f"[Error] Failed to send confirmation: {str(e)}")
 
-            QTimer.singleShot(100, lambda: self.show_auto_crop_notification(filename, label_name, sanitized_text))
+            QTimer.singleShot(100,
+                              lambda: self.show_auto_crop_notification(filename, label_name, sanitized_text, avg_color))
 
             return True
 
@@ -2530,6 +3026,109 @@ class DeepLearningPage(QWidget):
             error_msg = f"Auto-crop failed: {str(e)}"
             self.update_tcp_messages(f"[AutoCrop] ❌ {error_msg}")
             print(f"Auto-crop error: {e}")
+            return False
+
+    def calculate_average_color_from_crop(self, cropped_image):
+        """Calculate average RGB color from a PIL Image"""
+        try:
+            # Convert to RGB if necessary
+            if cropped_image.mode != 'RGB':
+                cropped_image = cropped_image.convert('RGB')
+
+            # Get image data as numpy array or iterate through pixels
+            width, height = cropped_image.size
+            total_r = total_g = total_b = 0
+            pixel_count = 0
+
+            # Iterate through all pixels
+            for y in range(height):
+                for x in range(width):
+                    r, g, b = cropped_image.getpixel((x, y))
+                    total_r += r
+                    total_g += g
+                    total_b += b
+                    pixel_count += 1
+
+            if pixel_count > 0:
+                return (total_r / pixel_count, total_g / pixel_count, total_b / pixel_count)
+            return None
+
+        except Exception as e:
+            print(f"Error calculating average color: {e}")
+            return None
+
+    def save_cropped_image_color_data(self, image_path, label, avg_color, tcp_message):
+        """Save color data for cropped image including four-point coordinates"""
+        try:
+            import json
+            from datetime import datetime
+
+            # Get bounding box from last drawn box
+            if hasattr(self, 'last_bounding_box') and self.last_bounding_box:
+                box, _ = self.last_bounding_box
+
+                # Create color data structure with four points
+                color_data = {
+                    "label": label,
+                    "tcp_message": tcp_message,
+                    "bbox": {
+                        "x": box.x(),
+                        "y": box.y(),
+                        "width": box.width(),
+                        "height": box.height()
+                    },
+                    "average_color": {
+                        "r": avg_color[0],
+                        "g": avg_color[1],
+                        "b": avg_color[2]
+                    },
+                    "color_mode": "RGB",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "source": "auto_crop_tcp"
+                }
+            else:
+                # Fallback if no bounding box
+                color_data = {
+                    "label": label,
+                    "tcp_message": tcp_message,
+                    "average_color": {
+                        "r": avg_color[0],
+                        "g": avg_color[1],
+                        "b": avg_color[2]
+                    },
+                    "color_mode": "RGB",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "source": "auto_crop_tcp"
+                }
+
+            # Save to JSON file
+            color_json_path = os.path.splitext(image_path)[0] + "_colors.json"
+
+            # Load existing data if any
+            existing_data = []
+            if os.path.exists(color_json_path):
+                try:
+                    with open(color_json_path, 'r') as f:
+                        existing_data = json.load(f)
+                except:
+                    pass
+
+            # Append new color data
+            existing_data.append(color_data)
+
+            # Save updated data
+            with open(color_json_path, 'w') as f:
+                json.dump(existing_data, f, indent=2)
+
+            print(f"✓ Saved color data to: {os.path.basename(color_json_path)}")
+            print(f"  Label: {label}, RGB: ({avg_color[0]:.0f}, {avg_color[1]:.0f}, {avg_color[2]:.0f})")
+            if 'four_points' in color_data:
+                print(f"  Four points: {color_data['four_points']}")
+
+            return True
+
+        except Exception as e:
+            print(f"Error saving color data: {e}")
             return False
 
     def is_ready_for_auto_crop(self):
@@ -2570,17 +3169,24 @@ class DeepLearningPage(QWidget):
 
         return sanitized
 
-    def show_auto_crop_notification(self, filename, label_name, tcp_text):
-        """Show auto-crop notification"""
+    def show_auto_crop_notification(self, filename, label_name, tcp_text, avg_color=None):
+        """Show auto-crop notification with color info"""
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Auto Crop & Save")
-        msg_box.setText(f"✅ Auto-saved cropped image!\n\n"
-                        f"📄 {filename}\n"
-                        f"🏷️ Label: {label_name}\n"
-                        f"📡 TCP Text: {tcp_text}")
+
+        message = f"✅ Auto-saved cropped image!\n\n"
+        message += f"📄 {filename}\n"
+        message += f"🏷️ Label: {label_name}\n"
+        message += f"📡 TCP Text: {tcp_text}\n"
+
+        if avg_color:
+            r, g, b = avg_color
+            message += f"🎨 Average Color: RGB({r:.0f}, {g:.0f}, {b:.0f})\n"
+
+        msg_box.setText(message)
         msg_box.setIcon(QMessageBox.Information)
 
-        QTimer.singleShot(2000, msg_box.close)
+        QTimer.singleShot(3000, msg_box.close)
         msg_box.show()
 
     # ---------- Cancel Functions ----------
