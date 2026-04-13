@@ -878,57 +878,120 @@ class PipelineRunner:
                 suc_layout.setContentsMargins(0, 0, 0, 0)
                 suc_layout.setSpacing(0)
 
-                # Header bar — badge AFTER the green line so line is never blocked
+                orbbec_thread = PipelineRunner.get_orbbec_thread()
+                complete_trigger_done = {"done": False}
+
+                # Header bar
                 suc_hdr = QWidget()
                 suc_hdr.setFixedHeight(70)
                 suc_hdr.setStyleSheet("background:#031A10;")
-                suc_hdr_row = QHBoxLayout(suc_hdr); suc_hdr_row.setContentsMargins(14,0,14,0); suc_hdr_row.setSpacing(12)
+                suc_hdr_row = QHBoxLayout(suc_hdr)
+                suc_hdr_row.setContentsMargins(14, 0, 14, 0)
+                suc_hdr_row.setSpacing(12)
+
                 suc_badge = QLabel("COMPLETE")
-                suc_badge.setStyleSheet("font-size:14px;font-weight:900;color:#00FF88;background:#021008;border:1px solid #00FF8844;padding:4px 14px;letter-spacing:3px;font-family:Consolas;")
+                suc_badge.setStyleSheet(
+                    "font-size:14px;font-weight:900;color:#00FF88;background:#021008;"
+                    "border:1px solid #00FF8844;padding:4px 14px;letter-spacing:3px;font-family:Consolas;"
+                )
+
                 suc_title = QLabel("ASSEMBLY COMPLETE")
-                suc_title.setStyleSheet("font-size:22px;font-weight:900;color:#00FF88;letter-spacing:3px;font-family:Consolas;background:transparent;")
+                suc_title.setStyleSheet(
+                    "font-size:22px;font-weight:900;color:#00FF88;"
+                    "letter-spacing:3px;font-family:Consolas;background:transparent;"
+                )
+
                 suc_badge.hide()
-                suc_hdr_row.addWidget(suc_title); suc_hdr_row.addStretch()
+                suc_hdr_row.addWidget(suc_title)
+                suc_hdr_row.addStretch()
                 suc_layout.addWidget(suc_hdr)
-                # Green separator line — always on top, never blocked
-                suc_sep = QWidget(); suc_sep.setFixedHeight(2)
+
+                suc_sep = QWidget()
+                suc_sep.setFixedHeight(2)
                 suc_sep.setStyleSheet("background:#00FF88;")
                 suc_layout.addWidget(suc_sep)
 
-                # Big tick
                 tick_label = QLabel("✓")
                 tick_label.setAlignment(Qt.AlignCenter)
                 tick_label.setFixedHeight(150)
                 tick_label.setStyleSheet("font-size:110px;color:#00FF88;background:#031A10;font-weight:900;")
                 suc_layout.addWidget(tick_label)
-                # Thin divider below tick
-                tick_div = QWidget(); tick_div.setFixedHeight(1)
+
+                tick_div = QWidget()
+                tick_div.setFixedHeight(1)
                 tick_div.setStyleSheet("background:#0E2A40;")
                 suc_layout.addWidget(tick_div)
 
-                # Status rows — bigger fonts
-                job_id_str = job_data.get("job_id", "—")
+                job_id_str = job_data.get("job_id", "-")
                 steps_str = f"{len(job_data['completed_steps'])}/{job_data['total_steps']}"
-                tcp_str = "CONNECTED" if (PipelineRunner._heartbeat_manager and PipelineRunner._heartbeat_manager.is_connected()) else "DISCONNECTED"
+                tcp_str = "CONNECTED" if (
+                            PipelineRunner._heartbeat_manager and PipelineRunner._heartbeat_manager.is_connected()) else "DISCONNECTED"
                 tcp_color = "#00FF88" if "CONNECTED" in tcp_str else "#FF3344"
-                for sk, sv, sc in [("STEPS", steps_str+" COMPLETED","#00FF88"),("JOB ID", job_id_str,"#AACCEE"),("TCP",tcp_str,tcp_color)]:
+
+                for sk, sv, sc in [
+                    ("STEPS", steps_str + " COMPLETED", "#00FF88"),
+                    ("JOB ID", job_id_str, "#AACCEE"),
+                    ("TCP", tcp_str, tcp_color)
+                ]:
                     rw = QWidget()
                     rw.setFixedHeight(64)
-                    rw.setStyleSheet("background:#030810;border-bottom:1px solid #0E2A40;border-left:3px solid #00FF8844;")
-                    rwl = QHBoxLayout(rw); rwl.setContentsMargins(16,0,16,0); rwl.setSpacing(16)
+                    rw.setStyleSheet(
+                        "background:#030810;border-bottom:1px solid #0E2A40;border-left:3px solid #00FF8844;")
+                    rwl = QHBoxLayout(rw)
+                    rwl.setContentsMargins(16, 0, 16, 0)
+                    rwl.setSpacing(16)
+
                     lk = QLabel(sk)
-                    lk.setStyleSheet("font-size:20px;color:#1A5A2A;letter-spacing:2px;font-family:Consolas;background:transparent;min-width:120px;")
+                    lk.setStyleSheet(
+                        "font-size:20px;color:#1A5A2A;letter-spacing:2px;"
+                        "font-family:Consolas;background:transparent;min-width:120px;"
+                    )
+
                     lv = QLabel(sv)
-                    lv.setStyleSheet(f"font-size:16px;color:{sc};font-weight:900;font-family:Consolas;background:transparent;")
-                    rwl.addWidget(lk); rwl.addWidget(lv); rwl.addStretch()
+                    lv.setStyleSheet(
+                        f"font-size:16px;color:{sc};font-weight:900;font-family:Consolas;background:transparent;"
+                    )
+
+                    rwl.addWidget(lk)
+                    rwl.addWidget(lv)
+                    rwl.addStretch()
                     suc_layout.addWidget(rw)
 
                 ok_btn = QPushButton("▶  CONTINUE")
                 ok_btn.setFixedHeight(70)
-                ok_btn.setStyleSheet("font-size:20px;font-weight:900;background:#031A10;color:#00FF88;border:none;border-top:2px solid #00FF88;font-family:Consolas;letter-spacing:3px;"
-                    "QPushButton:hover{background:#052A18;color:#FFFFFF;}")
-                ok_btn.clicked.connect(success_dialog.accept)
+                ok_btn.setStyleSheet(
+                    "font-size:20px;font-weight:900;background:#031A10;color:#00FF88;"
+                    "border:none;border-top:2px solid #00FF88;font-family:Consolas;letter-spacing:3px;"
+                    "QPushButton:hover{background:#052A18;color:#FFFFFF;}"
+                )
+
+                def on_complete_continue():
+                    if complete_trigger_done["done"]:
+                        return
+                    complete_trigger_done["done"] = True
+                    success_dialog.accept()
+
+                def on_complete_hand_trigger():
+                    try:
+                        if complete_trigger_done["done"]:
+                            return
+                        print("[ASSEMBLY COMPLETE] Hand detected in trigger zone!")
+                        on_complete_continue()
+                    except Exception as e:
+                        print(f"[ASSEMBLY COMPLETE] Trigger error: {e}")
+
+                def _cleanup_complete_dialog(*_):
+                    try:
+                        PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
+                        print("[ASSEMBLY COMPLETE] Trigger cleared")
+                    except Exception as e:
+                        print(f"[ASSEMBLY COMPLETE] Cleanup trigger error: {e}")
+
+                ok_btn.clicked.connect(on_complete_continue)
                 suc_layout.addWidget(ok_btn)
+
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_complete_hand_trigger, state="idle")
+                success_dialog.finished.connect(_cleanup_complete_dialog)
 
                 success_dialog.exec()
 
@@ -2530,16 +2593,16 @@ class PipelineRunner:
                     letter-spacing: 2px; font-family: Consolas; background: transparent;
                 """)
 
-                hand_detection_status = QLabel("✋ HAND DETECTION: WAITING")
-                hand_detection_status.setStyleSheet("""
-                    font-size: 11px; font-weight: 900; color: #FFAA00;
-                    background-color: #1A1000; border: 1px solid #FFAA0044;
-                    padding: 4px 12px; letter-spacing: 1px; font-family: Consolas;
-                """)
+                # hand_detection_status = QLabel("✋ HAND DETECTION: WAITING")
+                # hand_detection_status.setStyleSheet("""
+                #     font-size: 11px; font-weight: 900; color: #FFAA00;
+                #     background-color: #1A1000; border: 1px solid #FFAA0044;
+                #     padding: 4px 12px; letter-spacing: 1px; font-family: Consolas;
+                # """)
 
                 saved_header_layout.addWidget(step_badge)
                 saved_header_layout.addStretch()
-                saved_header_layout.addWidget(hand_detection_status)
+                # saved_header_layout.addWidget(hand_detection_status)
                 saved_layout.addWidget(saved_header_widget)
 
                 has_video = uploaded_video_path and os.path.exists(uploaded_video_path)
@@ -2676,15 +2739,15 @@ class PipelineRunner:
                     QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
                 """)
 
-                hand_instruction = QLabel("✋ PLACE HAND IN BOTTOM-RIGHT CORNER TO CONTINUE")
-                hand_instruction.setStyleSheet("""
-                    font-size: 14px; color: #FFAA00; font-weight: 800;
-                    font-family: Consolas; letter-spacing: 1px;
-                    background-color: #1A1000; border: 1px solid #FFAA0044;
-                    padding: 8px 20px; border-radius: 2px;
-                """)
+                # hand_instruction = QLabel("✋ PLACE HAND IN BOTTOM-RIGHT CORNER TO CONTINUE")
+                # hand_instruction.setStyleSheet("""
+                #     font-size: 14px; color: #FFAA00; font-weight: 800;
+                #     font-family: Consolas; letter-spacing: 1px;
+                #     background-color: #1A1000; border: 1px solid #FFAA0044;
+                #     padding: 8px 20px; border-radius: 2px;
+                # """)
 
-                btn_layout.addWidget(hand_instruction)
+                # btn_layout.addWidget(hand_instruction)
                 btn_layout.addStretch()
                 btn_layout.addWidget(close_btn)
                 saved_layout.addWidget(btn_container)
@@ -2698,19 +2761,6 @@ class PipelineRunner:
                     trigger_processed = True
 
                     print("[ASSEMBLY RESULT] Hand detected in trigger zone!")
-                    hand_detection_status.setText("✓ HAND DETECTED!")
-                    hand_detection_status.setStyleSheet("""
-                        font-size: 11px; font-weight: 900; color: #00FF88;
-                        background-color: #031A10; border: 1px solid #00FF8844;
-                        padding: 4px 12px; letter-spacing: 1px; font-family: Consolas;
-                    """)
-                    hand_instruction.setText("✓ HAND DETECTED! CONTINUING...")
-                    hand_instruction.setStyleSheet("""
-                        font-size: 14px; color: #00FF88; font-weight: 800;
-                        font-family: Consolas; letter-spacing: 1px;
-                        background-color: #031A10; border: 1px solid #00FF8844;
-                        padding: 8px 20px; border-radius: 2px;
-                    """)
 
                     if close_btn.isEnabled():
                         QTimer.singleShot(500, close_btn.click)

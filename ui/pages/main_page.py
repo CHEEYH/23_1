@@ -1105,7 +1105,7 @@ class MainPage(QWidget):
         self.qr_result_ok = False
         self.qr_dialog = QRScanDialog(self)
         self.qr_dialog.status_label.setText("Scan QR code, then use hand gesture to confirm")
-        self.qr_dialog.confirm_btn.setText("CONFIRM WITH HAND")
+        self.qr_dialog.confirm_btn.setText("CONFIRM")
         self.qr_dialog.confirm_btn.setEnabled(False)
 
         # Override confirm button
@@ -1133,6 +1133,9 @@ class MainPage(QWidget):
             return
 
         self.qr_result_ok = True
+        self.qr_check_passed = True
+        if self.orbbec_thread:
+            self.orbbec_thread.set_trigger_state("waiting_qr")
         self.qr_dialog.status_label.setText("✓ QR SCANNED!")
         self.qr_dialog.status_label.setStyleSheet(
             "color: #00FF88; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
@@ -1158,53 +1161,42 @@ class MainPage(QWidget):
         print("[MainPage] QR ready - waiting for hand confirmation")
 
     def on_confirm_qr_trigger(self):
-        """Second hand gesture: Confirm QR and run pipeline"""
         print("[MainPage] 🖐️ Confirm trigger received - running pipeline")
 
         from PySide6.QtCore import QTimer
 
-        # ========== 修改：不检查 qr_check_passed，直接继续 ==========
-        # 或者检查 orbbec 状态
         if self.orbbec_thread and self.orbbec_thread.trigger_state != "waiting_qr":
             print(f"[MainPage] Wrong state: {self.orbbec_thread.trigger_state}, ignoring")
             return
 
-        # 如果 QR 还没扫描完成，设置标志
-        if not self.qr_check_passed:
-            print("[MainPage] QR not checked yet, but confirming anyway...")
-            self.qr_check_passed = True
-            self.qr_result_ok = True
-        # ============================================================
+        # ✅ 必须先 scan QR
+        if not self.qr_check_passed or not self.qr_result_ok:
+            print("[MainPage] QR not verified yet, ignoring hand confirm")
+            return
 
-        # 防止重复触发
         if self.pipeline_running or self.pipeline_precheck_running:
             print("[MainPage] Pipeline already running, ignoring confirm")
             return
 
-        # Close QR dialog if still open
         if self.qr_dialog:
             self.qr_dialog.accept()
             self.qr_dialog.deleteLater()
             self.qr_dialog = None
 
-        # Clean up QR worker
         if self.qr_worker:
             self.qr_worker.stop_scan()
             self.qr_worker.wait(300)
             self.qr_worker.deleteLater()
             self.qr_worker = None
 
-        # Update Orbbec state to confirmed
         if self.orbbec_thread:
             self.orbbec_thread.set_trigger_state("confirmed")
             print("[MainPage] Orbbec state changed to: confirmed")
 
-        # Reset flags
         self.waiting_for_qr_confirm = False
         self.waiting_for_hand_confirm = False
 
-        # Start pipeline
-        print("[MainPage] 🚀 Starting pipeline via hand gesture confirmation...")
+        print("[MainPage] 🚀 Starting pipeline via hand gesture confirmation.")
         QTimer.singleShot(0, self.start_pipeline_precheck)
 
     def cancel_qr_for_hand_trigger(self):
@@ -1274,6 +1266,7 @@ class MainPage(QWidget):
         clean = text.strip()
         if not clean: return
         self.qr_result_ok = True
+        self.qr_check_passed = True
         self.qr_dialog.status_label.setText("✓  Barcode received — ready to confirm")
         self.qr_dialog.status_label.setStyleSheet(
             "color: #00FF88; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
