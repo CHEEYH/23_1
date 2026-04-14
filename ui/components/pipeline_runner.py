@@ -27,6 +27,10 @@ try:
 except ImportError:
     print("WARNING: Camera module not available")
 
+from camera.camera import AutoCaptureFlow
+import cv2
+from ultralytics import YOLO
+
 
 # ── Tech HMI Style Helpers ────────────────────────────────────────────────
 _DIALOG_BG   = "QDialog { background-color: #060C14; }"
@@ -1420,9 +1424,139 @@ class PipelineRunner:
             print(f"Error saving pending jobs: {e}")
 
     @staticmethod
+    def _points_to_bbox(points_data):
+        try:
+            if not points_data or "points" not in points_data:
+                return None
+
+            pts = points_data["points"]
+            if not pts:
+                return None
+
+            xs = [float(p[0]) for p in pts]
+            ys = [float(p[1]) for p in pts]
+
+            return [min(xs), min(ys), max(xs), max(ys)]
+        except Exception as e:
+            print(f"❌ Error converting points to bbox: {e}")
+            return None
+
+    @staticmethod
+    def _load_all_orbbec_points_from_folder(recipe_name: str, folder_name: str, exclude_block_id: str = None):
+        try:
+            recipe_folder = config_manager.get_recipe_folder(recipe_name)
+            if not recipe_folder:
+                return []
+
+            base_folder = os.path.join(recipe_folder, folder_name)
+            if not os.path.exists(base_folder):
+                print(f"[OTHER ORBBEC] Base folder not found: {base_folder}")
+                return []
+
+            import glob
+            results = []
+            block_dirs = glob.glob(os.path.join(base_folder, "Block_*"))
+
+            for block_dir in block_dirs:
+                try:
+                    block_name = os.path.basename(block_dir)
+                    this_block_id = block_name.replace("Block_", "").strip()
+
+                    if exclude_block_id is not None and str(this_block_id) == str(exclude_block_id):
+                        continue
+
+                    json_files = glob.glob(os.path.join(block_dir, "box_orbbec*.json"))
+                    if not json_files:
+                        continue
+
+                    latest_json = max(json_files, key=os.path.getmtime)
+                    with open(latest_json, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+
+                    points = []
+                    if isinstance(data, list):
+                        for p in data:
+                            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                                points.append((float(p[0]), float(p[1])))
+                            elif isinstance(p, dict):
+                                x = p.get("x")
+                                y = p.get("y")
+                                if x is not None and y is not None:
+                                    points.append((float(x), float(y)))
+
+                    if len(points) < 2:
+                        continue
+
+                    results.append({
+                        "block_id": this_block_id,
+                        "block_name": block_name,
+                        "json_path": latest_json,
+                        "points": points
+                    })
+
+                except Exception as e:
+                    print(f"[OTHER ORBBEC] Failed reading {block_dir}: {e}")
+
+            return results
+
+        except Exception as e:
+            print(f"❌ Error loading all Orbbec JSON boxes: {e}")
+            return []
+
+    @staticmethod
+    def _load_latest_box_world_points(recipe_name: str, folder_name: str, block_id: str):
+        try:
+            recipe_folder = config_manager.get_recipe_folder(recipe_name)
+            if not recipe_folder:
+                return None
+
+            target_folder = os.path.join(recipe_folder, folder_name, f"Block_{block_id}")
+            if not os.path.exists(target_folder):
+                print(f"[BOX_WORLD] Folder not found: {target_folder}")
+                return None
+
+            import glob
+            json_files = glob.glob(os.path.join(target_folder, "box_world*.json"))
+            if not json_files:
+                print(f"[BOX_WORLD] No box_world json found in: {target_folder}")
+                return None
+
+            latest_json = max(json_files, key=os.path.getmtime)
+            with open(latest_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            points = []
+            if isinstance(data, list):
+                for p in data:
+                    if isinstance(p, (list, tuple)) and len(p) >= 2:
+                        points.append((float(p[0]), float(p[1])))
+                    elif isinstance(p, dict):
+                        x = p.get("x")
+                        y = p.get("y")
+                        if x is not None and y is not None:
+                            points.append((float(x), float(y)))
+
+            if len(points) < 2:
+                print(f"[BOX_WORLD] Not enough points in: {latest_json}")
+                return None
+
+            return {
+                "json_path": latest_json,
+                "points": points
+            }
+
+        except Exception as e:
+            print(f"❌ Error loading latest box_world points: {e}")
+            return None
+
+    @staticmethod
     def _execute_screw_block(block_data: Dict, step_number: int, total_steps: int, parent_widget) -> bool:
+        from PySide6.QtWidgets import QApplication
+        import os
+        import cv2
+
         PipelineRunner._init_heartbeat_manager()
-        # PipelineRunner.send_screw_start_to_server()
+
         dialog = QDialog(parent_widget)
         dialog.setWindowTitle(f"Step {step_number}: Screw Operation")
         dialog.showFullScreen()
@@ -1440,17 +1574,230 @@ class PipelineRunner:
 
         try:
             block_id = PipelineRunner._resolve_block_id(block_data)
-        except Exception as e:
-            QMessageBox.warning(parent_widget, "⚠️ Missing Block ID",
-                                f"Screw block does not contain a valid block id.\n\n{str(e)}")
-            return False
+            # ✅ SEND box_world TO SERVER（target）
+            send_success, coord_string = PipelineRunner._send_latest_coordinates_from_folder(
+                recipe_name,
+                "ScrewBoxesData",
+                block_id
+            )
 
-        first_send_success, first_coord_string = PipelineRunner._send_latest_coordinates_from_folder(recipe_name,
-                                                                                                     "ScrewBoxesData",
-                                                                                                     block_id)
+            if send_success:
+                print(f"[SCREW TARGET] ✅ box_world sent to server: {coord_string}")
+            else:
+                print("[SCREW TARGET] ❌ Failed to send box_world")
+        except Exception as e:
+            QMessageBox.warning(
+                parent_widget,
+                "⚠️ Missing Block ID",
+                f"Screw block does not contain a valid block id.\n\n{str(e)}"
+            )
+            return False
 
         orbbec_thread = PipelineRunner.get_orbbec_thread()
         screw_trigger_done = {"done": False}
+        ai_capture_done = {"done": False}
+        other_predictions_for_orbbec = []
+
+        # =========================================================
+        # TARGET = current block's box_orbbec.json
+        # OTHER  = all YOLO detections + other blocks' box_orbbec.json
+        # =========================================================
+        def _apply_screw_target_and_other_to_orbbec():
+            nonlocal other_predictions_for_orbbec
+
+            if not orbbec_thread:
+                return [], None
+
+            try:
+                # 1) TARGET = current block's box_world*.json
+                # -------------------------------------------------
+                target_points = PipelineRunner._load_latest_box_world_points(
+                    recipe_name,
+                    "ScrewBoxesData",
+                    block_id
+                )
+
+                target_bbox = PipelineRunner._points_to_bbox(target_points)
+
+                if target_bbox:
+                    print(f"[SCREW TARGET] Using box_world target bbox: {target_bbox}")
+                    try:
+                        if hasattr(orbbec_thread, "set_external_target_bbox"):
+                            orbbec_thread.set_external_target_bbox(target_bbox)
+                    except Exception as e:
+                        print(f"[SCREW TARGET] set_external_target_bbox error: {e}")
+                else:
+                    print("[SCREW TARGET] No box_world target found")
+                    try:
+                        if hasattr(orbbec_thread, "clear_external_target_bbox"):
+                            orbbec_thread.clear_external_target_bbox()
+                    except Exception as e:
+                        print(f"[SCREW TARGET] clear_external_target_bbox error: {e}")
+
+                # -------------------------------------------------
+                # 2) OTHER = all YOLO + other blocks' box_orbbec
+                # -------------------------------------------------
+                all_boxes = []
+                for obj in other_predictions_for_orbbec:
+                    try:
+                        bbox = obj.get("bbox", [])
+                        class_name = obj.get("class_name", "UNKNOWN")
+                        confidence = float(obj.get("confidence", 0.0))
+                        all_boxes.append({
+                            "bbox": bbox,
+                            "class_name": class_name,
+                            "confidence": confidence,
+                            "source": obj.get("source", "yolo")
+                        })
+                    except Exception as e:
+                        print(f"[SCREW OTHER] append error: {e}")
+
+                try:
+                    if hasattr(orbbec_thread, "set_all_detection_boxes"):
+                        orbbec_thread.set_all_detection_boxes(all_boxes)
+                        print(f"[SCREW OTHER] Sent {len(all_boxes)} boxes to Orbbec thread")
+                except Exception as e:
+                    print(f"[SCREW OTHER] set_all_detection_boxes error: {e}")
+
+                for obj in other_predictions_for_orbbec:
+                    print(f"[SCREW OTHER] {obj.get('class_name', 'UNKNOWN')} at {obj.get('bbox')}")
+
+                return all_boxes, target_bbox
+
+            except Exception as e:
+                print(f"[SCREW APPLY] ❌ Error applying target/other to Orbbec: {e}")
+                return [], None
+
+        def _run_screw_other_object_predict_once():
+            nonlocal other_predictions_for_orbbec
+
+            if ai_capture_done["done"]:
+                return
+
+            ai_capture_done["done"] = True
+            other_predictions_for_orbbec = []
+
+            try:
+                # -------------------------------------------------
+                # A) load other blocks' box_orbbec*.json as OTHER
+                # -------------------------------------------------
+                json_other_predictions = []
+                other_orbbec_boxes = PipelineRunner._load_all_orbbec_points_from_folder(
+                    recipe_name,
+                    "ScrewBoxesData",
+                    exclude_block_id=str(block_id)
+                )
+
+                for item in other_orbbec_boxes:
+                    pred = PipelineRunner._points_to_other_prediction(
+                        item,
+                        class_name=f"OTHER_OBJECT_{item.get('block_name', 'UNKNOWN')}"
+                    )
+                    if pred:
+                        pred["source"] = "json_orbbec"
+                        pred["json_type"] = "orbbec"
+                        pred["block_id"] = item.get("block_id")
+                        json_other_predictions.append(pred)
+                        print(f"[SCREW OTHER] JSON other {item.get('block_name')} -> {pred.get('bbox')}")
+
+                # -------------------------------------------------
+                # B) add ALL YOLO detections as OTHER
+                # -------------------------------------------------
+                yolo_other_predictions = []
+
+                if CAMERA_AVAILABLE:
+                    from camera.camera import AutoCaptureFlow
+                    from ultralytics import YOLO
+
+                    holder = {"done": False}
+
+                    def on_capture_finished(success, message, image_path):
+                        nonlocal other_predictions_for_orbbec
+
+                        try:
+                            if not success or not image_path:
+                                print(f"[SCREW OTHER] ❌ Capture failed: {message}")
+                                other_predictions_for_orbbec = json_other_predictions
+                                _apply_screw_target_and_other_to_orbbec()
+                                holder["done"] = True
+                                return
+
+                            frame = cv2.imread(image_path)
+                            if frame is None:
+                                print(f"[SCREW OTHER] ❌ Cannot read captured image: {image_path}")
+                                other_predictions_for_orbbec = json_other_predictions
+                                _apply_screw_target_and_other_to_orbbec()
+                                holder["done"] = True
+                                return
+
+                            model_path = None
+                            recipe_path = config_manager.get_recipe_folder(recipe_name)
+                            if recipe_path:
+                                import glob
+                                best_files = glob.glob(
+                                    os.path.join(recipe_path, "yolo_model", "**", "weights", "best.pt"),
+                                    recursive=True
+                                )
+                                if best_files:
+                                    model_path = sorted(best_files, key=os.path.getmtime, reverse=True)[0]
+
+                            if not model_path or not os.path.exists(model_path):
+                                print("[SCREW OTHER] ⚠ No YOLO model found")
+                                other_predictions_for_orbbec = json_other_predictions
+                                _apply_screw_target_and_other_to_orbbec()
+                                holder["done"] = True
+                                return
+
+                            print(f"[SCREW OTHER] Using model: {model_path}")
+                            model = YOLO(model_path)
+                            results = model(frame, conf=0.25)
+                            detections = results[0]
+
+                            if len(detections.boxes) > 0:
+                                boxes = detections.boxes
+                                for i in range(len(boxes)):
+                                    xyxy = boxes.xyxy[i].cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy[i]
+                                    class_id_val = int(
+                                        boxes.cls[i].cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls[i])
+                                    conf_val = float(
+                                        boxes.conf[i].cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf[i])
+                                    class_name = detections.names.get(class_id_val, f"class_{class_id_val}")
+
+                                    yolo_other_predictions.append({
+                                        "bbox": xyxy.tolist() if hasattr(xyxy, "tolist") else xyxy,
+                                        "class_id": class_id_val,
+                                        "class_name": class_name,
+                                        "confidence": conf_val,
+                                        "source": "yolo"
+                                    })
+                                    print(f"[SCREW OTHER] YOLO keep: {class_name} -> {xyxy}")
+
+                            other_predictions_for_orbbec = yolo_other_predictions + json_other_predictions
+                            _apply_screw_target_and_other_to_orbbec()
+
+                        except Exception as e:
+                            print(f"[SCREW OTHER] ❌ Predict error: {e}")
+                            other_predictions_for_orbbec = json_other_predictions
+                            _apply_screw_target_and_other_to_orbbec()
+                        finally:
+                            holder["done"] = True
+
+                    print("[SCREW OTHER] Starting one-shot capture + predict for all YOLO detections")
+                    AutoCaptureFlow(callback=on_capture_finished)
+
+                else:
+                    print("[SCREW OTHER] Camera module not available")
+                    other_predictions_for_orbbec = json_other_predictions
+                    _apply_screw_target_and_other_to_orbbec()
+
+            except Exception as e:
+                print(f"[SCREW OTHER] ❌ AutoCaptureFlow failed: {e}")
+                _apply_screw_target_and_other_to_orbbec()
+
+        # First apply target immediately
+        _apply_screw_target_and_other_to_orbbec()
+        # Then build OTHER objects
+        _run_screw_other_object_predict_once()
 
         # ── TECH HEADER BAR ──────────────────────────────────────────────
         hdr_bar = QWidget()
@@ -1458,26 +1805,32 @@ class PipelineRunner:
         hdr_bar.setStyleSheet(
             "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             "stop:0 #0A1828,stop:0.5 #060C14,stop:1 #050D18);"
-            "border-bottom:2px solid #00AAFF;")
+            "border-bottom:2px solid #00AAFF;"
+        )
         hdr_row = QHBoxLayout(hdr_bar)
         hdr_row.setContentsMargins(24, 0, 24, 0)
         hdr_row.setSpacing(20)
-        step_badge = QLabel(f"STEP {step_number}/{total_steps}")  # No spaces around slash
+
+        step_badge = QLabel(f"STEP {step_number}/{total_steps}")
         step_badge.setStyleSheet(
-            "font-size:16px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:4px 14px;letter-spacing:2px;font-family:Consolas;")
-        step_badge.setFixedHeight(24)  # Match assembly height
+            "font-size:16px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:4px 14px;letter-spacing:2px;font-family:Consolas;"
+        )
+        step_badge.setFixedHeight(24)
         step_badge.setContentsMargins(0, 0, 0, 0)
+
         hdr_title = QLabel("SCREW OPERATION")
         hdr_title.setStyleSheet(
             "font-size:28px;font-weight:900;color:#FFFFFF;"
-            "letter-spacing:6px;font-family:Consolas;background:transparent;")
+            "letter-spacing:6px;font-family:Consolas;background:transparent;"
+        )
+
         hdr_row.addWidget(step_badge)
         hdr_row.addWidget(hdr_title)
         hdr_row.addStretch()
         layout.addWidget(hdr_bar)
 
-        # cyan separator line
-        sep = QWidget(); sep.setFixedHeight(2)
+        sep = QWidget()
+        sep.setFixedHeight(2)
         sep.setStyleSheet("background:#00AAFF;")
         layout.addWidget(sep)
 
@@ -1501,21 +1854,21 @@ class PipelineRunner:
                         elif 'length:' in ll:
                             screw_length = line.split(':')[-1].strip()
 
-            # ── Data grid: 4 big cells ─────────────────────────────────
             data_panel = QWidget()
             data_panel.setStyleSheet(
                 "background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
                 "stop:0 #071018,stop:1 #060C14);"
-                "border-bottom:1px solid #0E2A40;")
+                "border-bottom:1px solid #0E2A40;"
+            )
             data_grid = QGridLayout(data_panel)
             data_grid.setSpacing(1)
             data_grid.setContentsMargins(0, 0, 0, 0)
 
             screw_data_pairs = [
                 ("SCREW COUNT", str(screw_count), "pcs"),
-                ("SCREW TYPE",  str(screw_type),  ""),
-                ("SCREW LENGTH",str(screw_length), "mm"),
-                ("TORQUE",      str(torque),       "Nm"),
+                ("SCREW TYPE", str(screw_type), ""),
+                ("SCREW LENGTH", str(screw_length), "mm"),
+                ("TORQUE", str(torque), "Nm"),
             ]
 
             for i, (lbl, val, unit) in enumerate(screw_data_pairs):
@@ -1526,29 +1879,36 @@ class PipelineRunner:
                     f"stop:0 #0A1828,stop:1 #060C14);"
                     f"border-right:{'0' if is_right else '1'}px solid #0E2A40;"
                     f"border-bottom:1px solid #0E2A40;"
-                    f"border-left:{'3px solid #00AAFF44' if not is_right else 'none'};")
+                    f"border-left:{'3px solid #00AAFF44' if not is_right else 'none'};"
+                )
                 cl = QVBoxLayout(cell)
                 cl.setContentsMargins(28, 20, 28, 20)
                 cl.setSpacing(8)
 
                 lw = QLabel(lbl)
                 lw.setStyleSheet(
-                    "font-size:22px;color:#2A5A8A;letter-spacing:4px;"
-                    "font-family:Consolas;font-weight:900;background:transparent;")
+                    "font-size:22px;color:#2A5A8A;letter-spacing:4px;font-family:Consolas;font-weight:900;background:transparent;"
+                )
 
-                val_row = QWidget(); val_row.setStyleSheet("background:transparent;")
+                val_row = QWidget()
+                val_row.setStyleSheet("background:transparent;")
                 vrl = QHBoxLayout(val_row)
-                vrl.setContentsMargins(0, 0, 0, 0); vrl.setSpacing(10)
+                vrl.setContentsMargins(0, 0, 0, 0)
+                vrl.setSpacing(10)
+
                 vw = QLabel(val)
                 vw.setStyleSheet(
-                    "font-size:52px;color:#00AAFF;font-weight:900;"
-                    "font-family:Consolas;letter-spacing:2px;background:transparent;")
+                    "font-size:52px;color:#00AAFF;font-weight:900;font-family:Consolas;letter-spacing:2px;background:transparent;"
+                )
+
                 uw = QLabel(unit)
                 uw.setStyleSheet(
-                    "font-size:20px;color:#1A4A6A;font-weight:900;"
-                    "font-family:Consolas;background:transparent;"
-                    "padding-top:24px;")
-                vrl.addWidget(vw); vrl.addWidget(uw); vrl.addStretch()
+                    "font-size:20px;color:#1A4A6A;font-weight:900;font-family:Consolas;background:transparent;padding-top:24px;"
+                )
+
+                vrl.addWidget(vw)
+                vrl.addWidget(uw)
+                vrl.addStretch()
 
                 cl.addWidget(lw)
                 cl.addWidget(val_row)
@@ -1559,60 +1919,18 @@ class PipelineRunner:
         else:
             warning_frame = QFrame()
             warning_frame.setStyleSheet(
-                "QFrame { border:1px solid #661020; border-left:3px solid #FF3344; "
-                "border-radius:0px; background:#1A0508; padding:30px; margin:12px; }")
+                "QFrame { border:1px solid #661020; border-left:3px solid #FF3344; border-radius:0px; background:#1A0508; padding:30px; margin:12px; }"
+            )
             warning_layout = QVBoxLayout(warning_frame)
+
             warning_label = QLabel("⚠  NO CONFIGURATION FOUND")
             warning_label.setStyleSheet(
-                "font-size:24px;font-weight:900;color:#FF3344;font-family:Consolas;letter-spacing:3px;")
+                "font-size:24px;font-weight:900;color:#FF3344;font-family:Consolas;letter-spacing:3px;"
+            )
             warning_label.setAlignment(Qt.AlignCenter)
             warning_layout.addWidget(warning_label)
             layout.addWidget(warning_frame)
 
-        # # ── Instructions panel ────────────────────────────────────────────
-        # instr_panel = QWidget()
-        # instr_panel.setStyleSheet(
-        #     "background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
-        #     "stop:0 #060C14,stop:1 #040A10);"
-        #     "border-top:1px solid #0E2A40;")
-        # instr_layout = QVBoxLayout(instr_panel)
-        # instr_layout.setContentsMargins(32, 24, 32, 24)
-        # instr_layout.setSpacing(16)
-        #
-        # instr_title = QLabel("OPERATOR INSTRUCTIONS")
-        # instr_title.setStyleSheet(
-        #     "font-size:12px;font-weight:900;color:#2A5A8A;"
-        #     "letter-spacing:5px;font-family:Consolas;"
-        #     "border-bottom:1px solid #0E2A40;padding-bottom:10px;background:transparent;")
-        # instr_layout.addWidget(instr_title)
-        #
-        # steps_data = [
-        #     ("01", "Prepare tool or screwdriver"),
-        #     ("02", "Position at target locations"),
-        #     ("03", "Apply specified torque"),
-        #     ("04", "Verify tightness on all screws"),
-        #     ("05", "Check final alignment"),
-        # ]
-        # for num, text in steps_data:
-        #     row = QWidget(); row.setStyleSheet("background:transparent;")
-        #     rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(16)
-        #     num_lbl = QLabel(num)
-        #     num_lbl.setFixedWidth(52)
-        #     num_lbl.setStyleSheet(
-        #         "font-size:18px;font-weight:900;color:#00AAFF55;"
-        #         "font-family:Consolas;background:transparent;")
-        #     dot_lbl = QLabel("·")
-        #     dot_lbl.setStyleSheet(
-        #         "font-size:18px;color:#1A3A5C;font-family:Consolas;background:transparent;")
-        #     dot_lbl.setFixedWidth(16)
-        #     txt_lbl = QLabel(text)
-        #     txt_lbl.setStyleSheet(
-        #         "font-size:20px;color:#AACCEE;font-family:Consolas;background:transparent;")
-        #     rl.addWidget(num_lbl); rl.addWidget(dot_lbl); rl.addWidget(txt_lbl); rl.addStretch()
-        #     instr_layout.addWidget(row)
-        #
-        # layout.addWidget(instr_panel, 1)
-        # ── Vertical spacer (fills space between data grid and footer) ────
         layout.addStretch(1)
 
         # ── Button footer ─────────────────────────────────────────────────
@@ -1621,7 +1939,8 @@ class PipelineRunner:
         btn_footer.setStyleSheet(
             "background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
             "stop:0 #0A1828,stop:1 #060C14);"
-            "border-top:2px solid #00AAFF33;")
+            "border-top:2px solid #00AAFF33;"
+        )
         btn_row = QHBoxLayout(btn_footer)
         btn_row.setContentsMargins(24, 16, 24, 16)
         btn_row.setSpacing(16)
@@ -1694,6 +2013,7 @@ class PipelineRunner:
                 )
 
         ok_btn.clicked.connect(on_ok_continue)
+
         def on_screw_hand_trigger():
             try:
                 if screw_trigger_done["done"]:
@@ -1706,6 +2026,18 @@ class PipelineRunner:
         PipelineRunner.set_orbbec_trigger(orbbec_thread, on_screw_hand_trigger, state="idle")
 
         def _cleanup_screw_dialog(*_):
+            try:
+                if hasattr(orbbec_thread, "clear_external_target_bbox"):
+                    orbbec_thread.clear_external_target_bbox()
+            except Exception:
+                pass
+
+            try:
+                if hasattr(orbbec_thread, "clear_all_detection_boxes"):
+                    orbbec_thread.clear_all_detection_boxes()
+            except Exception:
+                pass
+
             try:
                 main_page = None
                 for w in QApplication.topLevelWidgets():
@@ -1730,6 +2062,7 @@ class PipelineRunner:
                 print(f"[SCREW OPERATION] Cleanup trigger error: {e}")
 
         dialog.finished.connect(_cleanup_screw_dialog)
+
         btn_row.addWidget(cancel_btn)
         btn_row.addStretch()
         btn_row.addWidget(ok_btn)

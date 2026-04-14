@@ -1034,11 +1034,6 @@ class OrbbecCameraThread(QThread):
                 self.status_signal.emit(f"Hand on wrong location: {wrong_location_name}")
                 print(f"[WRONG LOCATION] Timer started for: {wrong_location_name}")
 
-                if not self.error_sent:
-                    self.send_tcp_message_async("error")
-                    self.error_sent = True
-                    print(f"📤 [TCP] error (hand entered wrong location: {wrong_location_name})")
-
             elapsed_in_wrong = current_time - self.wrong_location_enter_time
 
             if self.wrong_location_delay_sec > 0:
@@ -1054,6 +1049,12 @@ class OrbbecCameraThread(QThread):
                 )
 
             if elapsed_in_wrong >= self.wrong_location_delay_sec:
+                if not self.error_sent:
+                    self.send_tcp_message_async("error")
+                    self.error_sent = True
+                    print(
+                        f"📤 [TCP] error (hand stayed on wrong location for {self.wrong_location_delay_sec:.1f}s: {wrong_location_name})")
+
                 self.play_wrong_location_sound_async()
                 cv2.putText(
                     frame,
@@ -1070,7 +1071,6 @@ class OrbbecCameraThread(QThread):
                 if self.error_sent:
                     self.send_tcp_message_async("clear_error")
                     self.error_sent = False
-                    print(f"📤 [TCP] clear_error (hand left wrong location)")
 
         # ========== DRAW ALL DETECTION BOXES (for wrong location visual) ==========
         if hasattr(self, 'all_detection_boxes') and self.all_detection_boxes:

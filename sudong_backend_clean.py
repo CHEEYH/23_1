@@ -43,7 +43,6 @@ OUTPUT_FOLDER = (
 ENABLE_STREAM_COMMAND = b"\x01\x00"
 ENABLE_STREAM_DATA    = b"\x01\x00"
 STOP_COMMAND          = b"\x05\x00"
-STOP_DATA             = b"\x00"
 
 DEFAULT_GROUP_NO    = 1
 DEFAULT_TORQUE_UNIT = 0
@@ -73,6 +72,8 @@ CUSTOM_SPEED_STEP1 = 100
 CUSTOM_SPEED_STEP2 = 200
 CUSTOM_SPEED_STEP3 = 150
 CUSTOM_SPEED_STEP4 = 100
+PRESET_STEP_SETTLE_SEC = 0.15
+PRESET_ACK_RETRIES = 2
 
 
 # =========================================================
@@ -148,6 +149,7 @@ selector_missing_error_sent       = False
 selector_expected_error           = False
 selector_stop_wait_active         = False
 selector_stop_wait_message        = ""
+selector_buzzer_active            = False
 
 corner_monitor = None
 
@@ -242,6 +244,38 @@ def send_buzzer_on():
 
 def send_buzzer_off():
     return send_buzzer_frame(BUZZER_OFF_FRAME)
+
+def sync_selector_buzzer(force: bool = False):
+    """Keep buzzer in sync with current selector error/wait states."""
+    global selector_buzzer_active
+
+    with selector_lock:
+        bits = latest_selector_bits[:]
+        expected_bit = current_expected_selector_bit
+        wrong_bits = set(current_wrong_selector_bits)
+        missing_bits = set(current_missing_selector_bits)
+        stop_wait_active = bool(selector_stop_wait_active)
+        expected_error = bool(selector_expected_error)
+
+    active_bits = {i + 1 for i, v in enumerate(bits) if v == 1}
+
+    should_buzz = False
+    if wrong_bits and any(b in active_bits for b in wrong_bits):
+        should_buzz = True
+    elif missing_bits and any(b in active_bits for b in missing_bits):
+        should_buzz = True
+    elif stop_wait_active and bool(active_bits):
+        should_buzz = True
+    elif expected_error and expected_bit is not None and expected_bit not in active_bits:
+        should_buzz = True
+
+    if force or should_buzz != selector_buzzer_active:
+        ok = send_buzzer_on() if should_buzz else send_buzzer_off()
+        if ok:
+            selector_buzzer_active = should_buzz
+
+    return should_buzz
+
 
 
 def send_selector_read_on_connect():
@@ -747,7 +781,6 @@ def prepare_current_screw_from_recipe(conn=None):
     log_debug(f"[SELECTOR] Waiting for bit {expected_bit}…")
 
     already_reported_wrong = set()
-    buzzer_is_on = False
 
     while True:
         result, bit_no, active_wrong_bits = wait_for_selector_event(
@@ -758,20 +791,13 @@ def prepare_current_screw_from_recipe(conn=None):
 
         # keep UI guidance updated
         set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
+        sync_selector_buzzer()
 
         if result == "OK":
-            if buzzer_is_on:
-                send_buzzer_off()
-                buzzer_is_on = False
-
             apply_screw_preset_to_driver(size_value, length_value, torque_value)
             return True
 
         if result == "WRONG":
-            if not buzzer_is_on:
-                send_buzzer_on()
-                buzzer_is_on = True
-
             if bit_no not in already_reported_wrong:
                 already_reported_wrong.add(bit_no)
                 log_error(
@@ -782,11 +808,6 @@ def prepare_current_screw_from_recipe(conn=None):
             continue
 
         if result == "CLEAR":
-            # wrong bit was put back, stop buzzer immediately
-            if buzzer_is_on:
-                send_buzzer_off()
-                buzzer_is_on = False
-
             # clear remembered wrong bits so next wrong pickup can trigger again
             already_reported_wrong.clear()
             continue
@@ -1132,6 +1153,7 @@ def handle_selector_status(status: BitSelectorStatus):
                                   if v == 1 and (i + 1) != expected_bit]
             set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
         selector_condition.notify_all()
+    sync_selector_buzzer()
     check_selector_held_during_recording()
 
 def get_latest_selector_status():
@@ -1159,6 +1181,7 @@ def set_selector_guidance(expected_bit=None, wrong_bits=None):
     with selector_lock:
         current_expected_selector_bit = int(expected_bit) if expected_bit is not None else None
         current_wrong_selector_bits   = set(int(b) for b in (wrong_bits or []))
+    sync_selector_buzzer()
 def clear_selector_guidance(): set_selector_guidance(None, [])
 def get_selector_guidance():
     with selector_lock: return current_expected_selector_bit, set(current_wrong_selector_bits)
@@ -1168,6 +1191,7 @@ def set_missing_selector_bits_unlocked(bit_list):
     current_missing_selector_bits = set(int(b) for b in bit_list)
 def set_missing_selector_bits(bit_list):
     with selector_lock: set_missing_selector_bits_unlocked(bit_list)
+    sync_selector_buzzer()
 def clear_missing_selector_bits(): set_missing_selector_bits([])
 def clear_missing_selector_bits_unlocked(): set_missing_selector_bits_unlocked([])
 def get_missing_selector_bits():
@@ -1180,9 +1204,13 @@ def set_selector_stop_wait(message="Waiting for all bits to place back..."):
     with selector_lock:
         selector_stop_wait_active  = True
         selector_stop_wait_message = str(message or "Waiting for all bits to place back...")
+    sync_selector_buzzer(force=True)
 def clear_selector_stop_wait():
     global selector_stop_wait_active, selector_stop_wait_message
-    with selector_lock: selector_stop_wait_active = False; selector_stop_wait_message = ""
+    with selector_lock:
+        selector_stop_wait_active = False
+        selector_stop_wait_message = ""
+    sync_selector_buzzer(force=True)
 def get_selector_stop_wait():
     with selector_lock: return bool(selector_stop_wait_active), str(selector_stop_wait_message)
 
@@ -1283,6 +1311,7 @@ def check_selector_held_during_recording():
             selector_expected_error           = False
             active_wrong_bits = [i + 1 for i, v in enumerate(bits) if v == 1 and (i + 1) != expected_bit]
             set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
+            sync_selector_buzzer(force=True)
             log_debug(f"[SELECTOR] Correct bit restored: {expected_bit}")
             try: send_result_to_client_text("INFO,SELECTOR_OK")
             except Exception: pass
@@ -1294,6 +1323,7 @@ def check_selector_held_during_recording():
             set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
             if not selector_missing_error_sent:
                 selector_missing_error_sent = True
+                sync_selector_buzzer(force=True)
                 log_error(f"[ERROR] Selector removed during run, expected bit {expected_bit}")
                 try: send_result_to_client_text("ERROR,SELECTOR_REMOVED")
                 except Exception: pass
@@ -1383,7 +1413,7 @@ def handle_live_packet(pkt):
 # =========================================================
 # DRIVER COMMAND BUILDERS
 # =========================================================
-def cmd_stop():                 return build_frame(STOP_COMMAND, STOP_DATA)
+def cmd_stop():                 return build_frame(STOP_COMMAND)
 def cmd_select_mode(mode, num): return build_frame(b"\x02\x05", bytes([mode, num]))
 def cmd_save_parameters():      return build_frame(b"\x04\x00", b"\x00")
 def cmd_read_selector_status(): return READ_SELECTOR_STATUS_ON_CONNECT_FRAME
@@ -1441,19 +1471,52 @@ def cmd_set_four_step_parameters(
 # Acquires preset_write_lock so the live worker pauses reads.
 # Sets _preset_writing so disconnect notifications are suppressed.
 # =========================================================
-def wait_for_specific_ack(client, cmd0, cmd1, desc, timeout=2.0):
+def wait_for_specific_ack(client, cmd0, cmd1, desc, timeout=5.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             for frame in client.recv_frames():
-                if not verify_frame(frame): continue
+                print(f"[PRESET][RX] {frame.hex(' ').upper()}")
+
+                if not verify_frame(frame):
+                    print(f"[PRESET][RX] invalid frame for {desc}")
+                    continue
+
+                if len(frame) >= 5:
+                    print(f"[PRESET][RX] cmd=({frame[3]:02X},{frame[4]:02X}) waiting=({cmd0:02X},{cmd1:02X})")
+
                 if len(frame) >= 5 and frame[3] == cmd0 and frame[4] == cmd1:
-                    log_debug(f"[PRESET] ACK OK: {desc}"); return True
-        except socket.timeout: continue
-    log_error(f"[PRESET] ACK TIMEOUT: {desc}"); return False
+                    log_debug(f"[PRESET] ACK OK: {desc}")
+                    return True
+        except socket.timeout:
+            continue
+
+    log_error(f"[PRESET] ACK TIMEOUT: {desc}")
+    return False
+
+
+def send_with_ack(client, frame: bytes, ack0: int, ack1: int, desc: str,
+                  timeout: float = 5.0,
+                  retries: int = PRESET_ACK_RETRIES,
+                  settle_sec: float = PRESET_STEP_SETTLE_SEC):
+    last_error = RuntimeError(f"{desc} ACK failed")
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            client.buffer = b""
+            client.send_frame(frame)
+            if wait_for_specific_ack(client, ack0, ack1, desc, timeout=timeout):
+                time.sleep(settle_sec)
+                return True
+            last_error = RuntimeError(f"{desc} ACK timeout")
+            log_error(f"[PRESET] Retry {attempt}/{retries} failed: {desc}")
+        except Exception as e:
+            last_error = e
+            log_error(f"[PRESET] Retry {attempt}/{retries} error on {desc}: {e}")
+        time.sleep(0.2)
+    raise last_error
 
 def apply_screw_preset_to_driver(size_text, length_text, torque_value):
-    global _preset_writing
+    global _preset_writing, live_worker
     size_text   = size_text.upper().strip()
     length_text = normalize_length_text(length_text)
     recipe      = get_recipe_by_spec(size_text, length_text, torque_value, DEFAULT_TORQUE_UNIT)
@@ -1481,7 +1544,7 @@ def apply_screw_preset_to_driver(size_text, length_text, torque_value):
         "initial_target_angle":  recipe["step1_angle"],
         "tighten_target_torque": recipe["step2_torque"], "tighten_target_speed": recipe["step2_speed"],
         "tighten_target_angle":  recipe["step2_angle"],
-        "initial_tightening_mode": 0,
+        "initial_tightening_mode": 1,
         "second_initial_target_torque": recipe["step3_torque"],
         "second_initial_target_speed":  recipe["step3_speed"],
         "second_initial_target_angle":  recipe["step3_angle"],
@@ -1494,29 +1557,58 @@ def apply_screw_preset_to_driver(size_text, length_text, torque_value):
     except Exception as e:
         popup_error("Parameter Limit Error", str(e)); raise
 
-    # ── Suppress disconnect notification and pause live reader ──
     _preset_writing = True
-    with preset_write_lock:
-        client = SudongTCPClient(SCREW_HOST, SCREW_PORT, SCREW_TIMEOUT, affect_status=False)
-        try:
-            client.connect()
-            log_debug("[PRESET] Stop"); client.send_frame(cmd_stop()); time.sleep(0.2)
-            log_debug("[PRESET] Select mode"); client.send_frame(cmd_select_mode(0, DEFAULT_GROUP_NO))
-            if not wait_for_specific_ack(client, 0x82, 0x05, "Select mode"):
-                raise RuntimeError("Mode select ACK failed")
-            log_debug("[PRESET] Group param"); client.send_frame(cmd_set_group_parameters(**basic_param))
-            if not wait_for_specific_ack(client, 0x82, 0x00, "Group parameter"):
-                raise RuntimeError("Basic parameter ACK failed")
-            log_debug("[PRESET] Four-step param"); client.send_frame(cmd_set_four_step_parameters(**four_step_param))
-            if not wait_for_specific_ack(client, 0x82, 0x01, "Four-step parameter"):
-                raise RuntimeError("Four-step parameter ACK failed")
-            log_debug("[PRESET] Save"); client.send_frame(cmd_save_parameters())
-            if not wait_for_specific_ack(client, 0x84, 0x00, "Save parameter"):
-                raise RuntimeError("Save parameter ACK failed")
+    try:
+        with preset_write_lock:
+            worker = live_worker
+            client = worker.client if (worker and worker.is_alive()) else None
+            if client is None or client.sock is None:
+                raise RuntimeError("Live screwdriver connection is not available for preset write")
+
+            client.buffer = b""
+
+            log_debug("[PRESET] Stop")
+            client.send_frame(cmd_stop())
+            time.sleep(0.2)
+
+            log_debug("[PRESET] Select mode")
+            send_with_ack(
+                client,
+                cmd_select_mode(0, DEFAULT_GROUP_NO),
+                0x82, 0x05,
+                "Select mode",
+                timeout=5.0,
+            )
+
+            log_debug("[PRESET] Group param")
+            send_with_ack(
+                client,
+                cmd_set_group_parameters(**basic_param),
+                0x82, 0x00,
+                "Group parameter",
+                timeout=5.0,
+            )
+
+            log_debug("[PRESET] Four-step param")
+            send_with_ack(
+                client,
+                cmd_set_four_step_parameters(**four_step_param),
+                0x82, 0x01,
+                "Four-step parameter",
+                timeout=5.0,
+            )
+
+            log_debug("[PRESET] Save")
+            send_with_ack(
+                client,
+                cmd_save_parameters(),
+                0x84, 0x00,
+                "Save parameter",
+                timeout=5.0,
+            )
             log_debug("[PRESET] Done")
-        finally:
-            client.close()
-    _preset_writing = False
+    finally:
+        _preset_writing = False
     # ───────────────────────────────────────────────────────────
 
 
