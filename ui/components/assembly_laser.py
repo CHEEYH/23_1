@@ -840,7 +840,7 @@ class MainWindow(QMainWindow):
             """)
 
     def save_current_box(self):
-        """Save the current pending bounding box to JSON file and send via Heartbeat Manager"""
+        """Save the current pending bounding box to separate pixel/world JSON files and send via Heartbeat Manager"""
         if self.pending_box is None or self.pending_box_label is None:
             QMessageBox.warning(self, "No Box", "No bounding box available to save.")
             return
@@ -901,7 +901,12 @@ class MainWindow(QMainWindow):
 
             preview_text = (
                 f"Do you want to save this bounding box?\n\n"
-                f"📍 World Coordinates:\n"
+                f"📍 Pixel Coordinates:\n"
+                f"   Point 1: ({corners_pixel[0][0]}, {corners_pixel[0][1]})\n"
+                f"   Point 2: ({corners_pixel[1][0]}, {corners_pixel[1][1]})\n"
+                f"   Point 3: ({corners_pixel[2][0]}, {corners_pixel[2][1]})\n"
+                f"   Point 4: ({corners_pixel[3][0]}, {corners_pixel[3][1]})\n\n"
+                f"🌍 World Coordinates:\n"
                 f"   Point 1: ({world_corners[0][0]:.2f}, {world_corners[0][1]:.2f})\n"
                 f"   Point 2: ({world_corners[1][0]:.2f}, {world_corners[1][1]:.2f})\n"
                 f"   Point 3: ({world_corners[2][0]:.2f}, {world_corners[2][1]:.2f})\n"
@@ -920,8 +925,15 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("Save cancelled")
                 return
 
-            # Save locally
-            save_data = [
+            # ===== Separate save data =====
+            pixel_data = [
+                [int(corners_pixel[0][0]), int(corners_pixel[0][1])],
+                [int(corners_pixel[1][0]), int(corners_pixel[1][1])],
+                [int(corners_pixel[2][0]), int(corners_pixel[2][1])],
+                [int(corners_pixel[3][0]), int(corners_pixel[3][1])]
+            ]
+
+            world_data = [
                 [float(world_corners[0][0]), float(world_corners[0][1])],
                 [float(world_corners[1][0]), float(world_corners[1][1])],
                 [float(world_corners[2][0]), float(world_corners[2][1])],
@@ -929,11 +941,20 @@ class MainWindow(QMainWindow):
             ]
 
             timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"box_world_{timestamp_str}.json"
-            save_path = os.path.join(self.block_boxes_path, filename)
 
-            with open(save_path, 'w') as f:
-                json.dump(save_data, f, indent=2)
+            pixel_filename = f"box_orbbec_{timestamp_str}.json"
+            world_filename = f"box_world_{timestamp_str}.json"
+
+            pixel_save_path = os.path.join(self.block_boxes_path, pixel_filename)
+            world_save_path = os.path.join(self.block_boxes_path, world_filename)
+
+            # save pixel file
+            with open(pixel_save_path, 'w') as f:
+                json.dump(pixel_data, f, indent=2)
+
+            # save world file
+            with open(world_save_path, 'w') as f:
+                json.dump(world_data, f, indent=2)
 
             # Update UI
             self.box_saved = True
@@ -950,25 +971,28 @@ class MainWindow(QMainWindow):
             self.pending_box = None
             self.pending_box_label = None
 
-            # Show success message
             QMessageBox.information(
                 self,
                 "Box Saved",
                 f"✅ Bounding box saved successfully!\n\n"
                 f"📁 Block: {self.block_name}\n"
-                f"📁 File: {filename}\n\n"
+                f"📄 Pixel file: {pixel_filename}\n"
+                f"📄 World file: {world_filename}\n\n"
                 f"Only one box can be saved per capture."
             )
 
-            self.status_label.setText(f"Box saved: {filename}")
+            self.status_label.setText(
+                f"Saved: {pixel_filename} + {world_filename}"
+            )
 
             # Format world coordinates for sending
-            world_coord_string = (f"{world_corners[0][0]:.2f}_{world_corners[0][1]:.2f},"
-                                  f"{world_corners[1][0]:.2f}_{world_corners[1][1]:.2f},"
-                                  f"{world_corners[2][0]:.2f}_{world_corners[2][1]:.2f},"
-                                  f"{world_corners[3][0]:.2f}_{world_corners[3][1]:.2f}")
+            world_coord_string = (
+                f"{world_corners[0][0]:.2f}_{world_corners[0][1]:.2f},"
+                f"{world_corners[1][0]:.2f}_{world_corners[1][1]:.2f},"
+                f"{world_corners[2][0]:.2f}_{world_corners[2][1]:.2f},"
+                f"{world_corners[3][0]:.2f}_{world_corners[3][1]:.2f}"
+            )
 
-            # Send using Heartbeat Manager
             self.send_coordinates(world_coord_string)
 
         except Exception as e:

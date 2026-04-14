@@ -1,14 +1,3 @@
-
-"""
-Sudong V4 – Screwdriver Monitor & Controller
-Combined: full backend + compact corner overlay UI
-  - Large OK/NG result banner (blinks + holds)
-  - 6 LED bit-selector indicators (M2–M8)
-  - 4 status dots in header: SD / SEL / SRV / CLI
-  - Standardised reply protocol
-  - Preset write no longer drops live-stream connection
-"""
-
 import os
 import re
 import csv
@@ -31,7 +20,7 @@ matplotlib.use("Agg")
 # =========================================================
 # CONFIG
 # =========================================================
-SCREW_HOST = "192.168.1.19"
+SCREW_HOST = "192.168.1.18"
 SCREW_PORT = 1200
 SCREW_TIMEOUT = 1.0
 
@@ -75,6 +64,15 @@ THREAD_PITCH_MM = {
     "M2": 0.40, "M2.5": 0.45, "M3": 0.50, "M4": 0.70,
     "M5": 0.80, "M6": 1.00, "M8": 1.25,
 }
+
+CUSTOM_DEFAULT_TOTAL_ANGLE = 720
+CUSTOM_STEP1_ANGLE = 30
+CUSTOM_STEP2_RATIO = 0.70
+CUSTOM_STEP3_RATIO = 0.15
+CUSTOM_SPEED_STEP1 = 100
+CUSTOM_SPEED_STEP2 = 200
+CUSTOM_SPEED_STEP3 = 150
+CUSTOM_SPEED_STEP4 = 100
 
 
 # =========================================================
@@ -140,8 +138,9 @@ cycle_completed         = False
 
 latest_selector_status      = None
 latest_selector_bits        = [None, None, None, None, None, None]
-current_expected_selector_size = None
+current_expected_selector_bit  = None
 current_wrong_selector_bits    = set()
+current_selector_bit           = None
 current_missing_selector_bits  = set()
 selector_has_been_correct        = False
 selector_missing_during_recording = False
@@ -164,7 +163,7 @@ READ_SELECTOR_STATUS_ON_CONNECT_FRAME = bytes.fromhex(
 )
 
 def wait_for_selector_event(
-    size_text: str,
+    expected_bit: int,
     timeout_sec: Optional[float] = None,
     previous_wrong_bits: Optional[set] = None,
 ):
@@ -175,7 +174,10 @@ def wait_for_selector_event(
       ("CLEAR", None, [])                       # all wrong bits released
       ("TIMEOUT", None, active_wrong_bits)
     """
-    expected_bit = get_selector_bit_index_for_size(size_text)
+    expected_bit = int(expected_bit)
+    if not (1 <= expected_bit <= 6):
+        raise ValueError(f"Expected selector bit out of range: {expected_bit}")
+
     seen_wrong_bits = set(previous_wrong_bits or set())
     deadline = None if timeout_sec is None else (time.time() + timeout_sec)
 
@@ -326,6 +328,20 @@ def notify_screwdriver_disconnected(reason: str):
     )
 
 
+def notify_selector_connected():
+    try:
+        send_result_to_client_text("INFO,SELECTOR_CONNECTED")
+    except Exception:
+        pass
+
+
+def notify_selector_disconnected():
+    try:
+        send_result_to_client_text("ERROR,SELECTOR_DISCONNECTED")
+    except Exception:
+        pass
+
+
 # =========================================================
 # CRC / FRAME HELPERS
 # =========================================================
@@ -450,8 +466,38 @@ def build_recipe_from_length(size: str, length: str, final_torque: float, torque
         "step4_torque": round(final_torque,       2),  "step4_speed": 100,  "step4_angle": step4_angle,
     }
 
+def build_recipe_for_custom(final_torque: float):
+    total_angle = int(CUSTOM_DEFAULT_TOTAL_ANGLE)
+    step1_angle = int(CUSTOM_STEP1_ANGLE)
+    remain_angle = max(1, total_angle - step1_angle)
+    step2_angle = max(1, int(remain_angle * CUSTOM_STEP2_RATIO))
+    step3_angle = max(1, int(remain_angle * CUSTOM_STEP3_RATIO))
+    step4_angle = max(1, remain_angle - step2_angle - step3_angle)
+    return {
+        "pitch": None,
+        "turns": None,
+        "total_angle": total_angle,
+        "step1_torque": round(final_torque * 0.10, 2),
+        "step1_speed": CUSTOM_SPEED_STEP1,
+        "step1_angle": step1_angle,
+        "step2_torque": round(final_torque * 0.20, 2),
+        "step2_speed": CUSTOM_SPEED_STEP2,
+        "step2_angle": step2_angle,
+        "step3_enable": 1,
+        "step3_torque": round(final_torque * 0.30, 2),
+        "step3_speed": CUSTOM_SPEED_STEP3,
+        "step3_angle": step3_angle,
+        "step4_torque": round(final_torque, 2),
+        "step4_speed": CUSTOM_SPEED_STEP4,
+        "step4_angle": step4_angle,
+    }
+
+
 def get_recipe_by_spec(size: str, length: str, final_torque: float, torque_unit: int = 0):
-    return build_recipe_from_length(size.upper().strip(), normalize_length_text(length), final_torque, torque_unit)
+    size_norm = size.upper().strip()
+    if size_norm == "CUSTOM":
+        return build_recipe_for_custom(final_torque)
+    return build_recipe_from_length(size_norm, normalize_length_text(length), final_torque, torque_unit)
 
 
 # =========================================================
@@ -535,14 +581,20 @@ def load_all_screw_configs_from_recipe(recipe_json_path: str):
         screw_length = normalize_length_text(str(config.get("length", "")).strip())
         screw_torque = float(config.get("torque", 0))
         screw_count  = int(config.get("count", 1))
+        screw_bit_raw = str(config.get("bit", "")).strip()
+        screw_bit = int(screw_bit_raw) if screw_bit_raw else None
         block_id     = str(config.get("block_id",   ""))
         block_name   = str(config.get("block_name", ""))
         if not screw_type:    raise ValueError(f"Screw type missing in block {block_id}")
         if not screw_length:  raise ValueError(f"Screw length missing in block {block_id}")
         if screw_torque <= 0: raise ValueError(f"Screw torque invalid in block {block_id}")
+        if screw_bit is None:
+            screw_bit = SIZE_TO_SELECTOR_BIT.get(screw_type)
+        if screw_bit is None or not (1 <= screw_bit <= 6):
+            raise ValueError(f"Screw Bit invalid in block {block_id}: {screw_bit_raw or screw_bit}")
         screw_list.append({
             "recipe_name": recipe_name, "type": screw_type, "length": screw_length,
-            "torque": screw_torque, "count": screw_count,
+            "torque": screw_torque, "count": screw_count, "bit": screw_bit,
             "block_id": block_id, "block_name": block_name,
             "position":  str(config.get("position",  "")),
             "position2": str(config.get("position2", "")),
@@ -648,7 +700,7 @@ def load_recipe_by_name(recipe_name: str):
     return load_recipe_into_memory(path)
 
 def set_current_screw_by_index(index: int):
-    global current_screw_index, current_size, current_length, current_torque
+    global current_screw_index, current_size, current_length, current_torque, current_selector_bit
     global current_screw_count, current_screw_block_id, current_screw_block_name
     with data_lock:
         if index < 0 or index >= len(all_recipe_screws):
@@ -658,10 +710,13 @@ def set_current_screw_by_index(index: int):
         current_size             = s["type"]
         current_length           = s["length"]
         current_torque           = s["torque"]
+        current_selector_bit      = int(s.get("bit", SIZE_TO_SELECTOR_BIT.get(s["type"])))
         current_screw_count      = s["count"]
         current_screw_block_id   = s["block_id"]
         current_screw_block_name = s["block_name"]
-    log_debug(f"[RECIPE] Screw idx={index} block={s['block_id']} {s['type']}x{s['length']} torque={s['torque']}")
+    log_debug(
+        f"[RECIPE] Screw idx={index} block={s['block_id']} {s['type']}x{s['length']} torque={s['torque']} bit={s.get('bit')}"
+    )
     return s
 
 def move_to_next_screw_block():
@@ -683,25 +738,26 @@ def prepare_current_screw_from_recipe(conn=None):
     size_value = screw_cfg["type"]
     length_value = screw_cfg["length"]
     torque_value = screw_cfg["torque"]
+    expected_bit = int(screw_cfg.get("bit", SIZE_TO_SELECTOR_BIT.get(size_value, 0)))
 
-    if size_value not in SIZE_TO_SELECTOR_BIT:
-        raise ValueError(f"UNSUPPORTED_SELECTOR_SIZE,{size_value}")
+    if not (1 <= expected_bit <= 6):
+        raise ValueError(f"UNSUPPORTED_SELECTOR_BIT,{expected_bit}")
 
-    set_selector_guidance(expected_size=size_value, wrong_bits=[])
-    log_debug(f"[SELECTOR] Waiting for {size_value}…")
+    set_selector_guidance(expected_bit=expected_bit, wrong_bits=[])
+    log_debug(f"[SELECTOR] Waiting for bit {expected_bit}…")
 
     already_reported_wrong = set()
     buzzer_is_on = False
 
     while True:
         result, bit_no, active_wrong_bits = wait_for_selector_event(
-            size_value,
+            expected_bit,
             None,
             previous_wrong_bits=already_reported_wrong
         )
 
         # keep UI guidance updated
-        set_selector_guidance(expected_size=size_value, wrong_bits=active_wrong_bits)
+        set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
 
         if result == "OK":
             if buzzer_is_on:
@@ -719,7 +775,7 @@ def prepare_current_screw_from_recipe(conn=None):
             if bit_no not in already_reported_wrong:
                 already_reported_wrong.add(bit_no)
                 log_error(
-                    f"[ERROR] Wrong screw bit {bit_no} ({selector_bit_to_size(bit_no)}) for expected {size_value}"
+                    f"[ERROR] Wrong screw bit {bit_no} ({selector_bit_to_size(bit_no)}) for expected bit {expected_bit}"
                 )
                 if conn:
                     send_reply(conn, "ERROR,WRONG_SCREW")
@@ -814,12 +870,18 @@ def set_screwdriver_connection_status(is_connected: bool, reason: str = ""):
 
 def set_selector_connection_status(is_connected: bool, reason: str = ""):
     global selector_connected, last_selector_status_text
+    old_connected = selector_connected
     new_text = ("CONNECTED" if is_connected else "DISCONNECTED") + (f" - {reason}" if reason else "")
     changed  = (selector_connected != is_connected) or (last_selector_status_text != new_text)
     selector_connected        = is_connected
     last_selector_status_text = new_text
     if changed:
         print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [SELECTOR] {new_text}")
+    if old_connected != is_connected:
+        if is_connected:
+            notify_selector_connected()
+        else:
+            notify_selector_disconnected()
 
 
 # =========================================================
@@ -976,19 +1038,32 @@ def safe_ui_call(callback):
 
 def show_corner_monitor():
     def _show():
-        if corner_monitor is None: return
+        global corner_monitor
+        if ui_root is None:
+            return
         try:
-            if hasattr(corner_monitor, "reset_view"): corner_monitor.reset_view()
-            corner_monitor.deiconify(); corner_monitor._place()
-            corner_monitor.lift(); corner_monitor.attributes("-topmost", True)
-        except Exception as e: log_error(f"[UI] show error: {e}")
+            if corner_monitor is None:
+                corner_monitor = CornerMonitor(ui_root)
+            if hasattr(corner_monitor, "reset_view"):
+                corner_monitor.reset_view()
+            corner_monitor.deiconify()
+            corner_monitor._place()
+            corner_monitor.lift()
+            corner_monitor.attributes("-topmost", True)
+        except Exception as e:
+            log_error(f"[UI] show error: {e}")
     safe_ui_call(_show)
 
 def hide_corner_monitor():
     def _hide():
-        if corner_monitor is None: return
-        try: corner_monitor.withdraw()
-        except Exception as e: log_error(f"[UI] hide error: {e}")
+        global corner_monitor
+        if corner_monitor is None:
+            return
+        try:
+            corner_monitor.destroy()
+            corner_monitor = None
+        except Exception as e:
+            log_error(f"[UI] hide error: {e}")
     safe_ui_call(_hide)
 
 def build_screw_graph_names(product_id, size, length, index):
@@ -1051,12 +1126,11 @@ def handle_selector_status(status: BitSelectorStatus):
         latest_selector_status = status
         latest_selector_bits   = [status.bit_1, status.bit_2, status.bit_3,
                                    status.bit_4, status.bit_5, status.bit_6]
-        expected_size, _ = get_selector_guidance()
-        if expected_size and expected_size in SIZE_TO_SELECTOR_BIT:
-            expected_bit      = get_selector_bit_index_for_size(expected_size)
+        expected_bit, _ = get_selector_guidance()
+        if expected_bit and 1 <= expected_bit <= 6:
             active_wrong_bits = [i + 1 for i, v in enumerate(latest_selector_bits)
                                   if v == 1 and (i + 1) != expected_bit]
-            set_selector_guidance(expected_size=expected_size, wrong_bits=active_wrong_bits)
+            set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
         selector_condition.notify_all()
     check_selector_held_during_recording()
 
@@ -1078,16 +1152,16 @@ def get_selector_bit_value_text(size_text):
     if bit_value is None: return f"[SELECTOR] {size_text} bit_{bit_index} = UNKNOWN"
     return f"[SELECTOR] {size_text} bit_{bit_index} = {'1 (TAKEN)' if bit_value else '0 (NOT TAKEN)'}"
 def selector_bit_to_size(bit_index):
-    return {1:"M2",2:"M3",3:"M4",4:"M5",5:"M6",6:"M8"}.get(bit_index, f"BIT{bit_index}")
+    return str(bit_index) if 1 <= int(bit_index) <= 6 else f"BIT{bit_index}"
 
-def set_selector_guidance(expected_size=None, wrong_bits=None):
-    global current_expected_selector_size, current_wrong_selector_bits
+def set_selector_guidance(expected_bit=None, wrong_bits=None):
+    global current_expected_selector_bit, current_wrong_selector_bits
     with selector_lock:
-        current_expected_selector_size = expected_size.upper().strip() if isinstance(expected_size, str) else None
-        current_wrong_selector_bits    = set(int(b) for b in (wrong_bits or []))
+        current_expected_selector_bit = int(expected_bit) if expected_bit is not None else None
+        current_wrong_selector_bits   = set(int(b) for b in (wrong_bits or []))
 def clear_selector_guidance(): set_selector_guidance(None, [])
 def get_selector_guidance():
-    with selector_lock: return current_expected_selector_size, set(current_wrong_selector_bits)
+    with selector_lock: return current_expected_selector_bit, set(current_wrong_selector_bits)
 
 def set_missing_selector_bits_unlocked(bit_list):
     global current_missing_selector_bits
@@ -1169,19 +1243,37 @@ def send_result_to_client_text(message: str):
         client_conn.sendall(str(message).encode("utf-8"))
         log_debug(f"[SERVER] Sent: {message}")
     except Exception as e: log_error(f"[ERROR] send_result_to_client_text: {e}")
+
+
+def send_initial_connection_status_to_client():
+    try:
+        if screwdriver_connected:
+            send_result_to_client_text("INFO,SCREWDRIVER_CONNECTED")
+        else:
+            send_result_to_client_text("ERROR,SCREWDRIVER_NOT_CONNECTED")
+    except Exception:
+        pass
+
+    try:
+        if selector_connected:
+            send_result_to_client_text("INFO,SELECTOR_CONNECTED")
+        else:
+            send_result_to_client_text("ERROR,SELECTOR_NOT_CONNECTED")
+    except Exception:
+        pass
 # ──────────────────────────────────────────────────────────────────────────
 
 def check_selector_held_during_recording():
     global selector_has_been_correct, selector_missing_during_recording
     global selector_missing_error_sent, selector_expected_error
     with data_lock:
-        is_rec        = recording
-        expected_size = current_size.strip().upper() if current_size else ""
-    if not is_rec or not expected_size: return
-    if expected_size not in SIZE_TO_SELECTOR_BIT: return
+        is_rec = recording
+        expected_bit = int(current_selector_bit) if current_selector_bit else None
+    if not is_rec or not expected_bit:
+        return
     bits = get_latest_selector_bits()
-    if not bits or None in bits: return
-    expected_bit = get_selector_bit_index_for_size(expected_size)
+    if not bits or None in bits:
+        return
     expected_on  = (bits[expected_bit - 1] == 1)
     if expected_on:
         selector_has_been_correct = True
@@ -1190,8 +1282,8 @@ def check_selector_held_during_recording():
             selector_missing_error_sent       = False
             selector_expected_error           = False
             active_wrong_bits = [i + 1 for i, v in enumerate(bits) if v == 1 and (i + 1) != expected_bit]
-            set_selector_guidance(expected_size=expected_size, wrong_bits=active_wrong_bits)
-            log_debug(f"[SELECTOR] Correct bit restored: {expected_size}")
+            set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
+            log_debug(f"[SELECTOR] Correct bit restored: {expected_bit}")
             try: send_result_to_client_text("INFO,SELECTOR_OK")
             except Exception: pass
     else:
@@ -1199,10 +1291,10 @@ def check_selector_held_during_recording():
             selector_missing_during_recording = True
             selector_expected_error           = True
             active_wrong_bits = [i + 1 for i, v in enumerate(bits) if v == 1 and (i + 1) != expected_bit]
-            set_selector_guidance(expected_size=expected_size, wrong_bits=active_wrong_bits)
+            set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
             if not selector_missing_error_sent:
                 selector_missing_error_sent = True
-                log_error(f"[ERROR] Selector removed during run, expected {expected_size}")
+                log_error(f"[ERROR] Selector removed during run, expected bit {expected_bit}")
                 try: send_result_to_client_text("ERROR,SELECTOR_REMOVED")
                 except Exception: pass
 
@@ -1370,7 +1462,8 @@ def apply_screw_preset_to_driver(size_text, length_text, torque_value):
     max_torque   = round(final_target * 1.10, 2)
     group_max_locking_angle = min(recipe["total_angle"] + 2000, 36000)
 
-    log_debug(f"[PRESET] {size_text}x{length_text} torque={torque_value} turns={recipe['turns']} total_angle={recipe['total_angle']}")
+    turns_text = recipe["turns"] if recipe.get("turns") is not None else "CUSTOM"
+    log_debug(f"[PRESET] {size_text}x{length_text} torque={torque_value} turns={turns_text} total_angle={recipe['total_angle']}")
 
     basic_param = {
         "group_no": DEFAULT_GROUP_NO, "torque_unit": DEFAULT_TORQUE_UNIT, "count_value": 20,
@@ -1664,6 +1757,7 @@ def handle_client(conn, addr):
     global client_conn
     client_conn = conn
     log_debug(f"[SERVER] Client connected: {addr}")
+    send_initial_connection_status_to_client()
     try:
         while True:
             data = conn.recv(1024)
@@ -1764,7 +1858,7 @@ P_DEEP = "#0a0f18"; P_PANEL = "#0d1420"; P_CARD = "#111b27"; P_BORDER = "#1a2840
 P_DIM  = "#4a6a8a"; P_MID   = "#94a3b8"; P_BRIGHT = "#e2e8f0"
 P_CYAN = "#0ea5e9"; P_BLUE  = "#38bdf8"; P_RED  = "#ef4444"; P_GREEN = "#22c55e"
 P_RED_BG = "#450a0a"; P_GREEN_BG = "#052e16"; P_BLUE_BG = "#0c2840"; P_IDLE_BG = "#1e293b"
-LED_NAMES = ["M2", "M3", "M4", "M5", "M6", "M8"]
+LED_NAMES = ["1", "2", "3", "4", "5", "6"]
 
 @dataclass
 class CornerData:
@@ -2056,11 +2150,7 @@ class CornerMonitor(tk.Toplevel):
         self._selector_msg_font.configure(size=chosen_size)
         self._selector_msg.configure(text=wrapped_text, fg=color)
 
-    def _build_selector_message(self, bits, expected_size, wrong_bits, missing_bits):
-        expected_bit = None
-        if expected_size:
-            try: expected_bit = get_selector_bit_index_for_size(expected_size)
-            except Exception: pass
+    def _build_selector_message(self, bits, expected_bit, wrong_bits, missing_bits):
         missing_names = [selector_bit_to_size(b) for b in sorted(missing_bits)]
         stop_wait_active, stop_wait_message = get_selector_stop_wait()
         if stop_wait_active:
@@ -2078,22 +2168,22 @@ class CornerMonitor(tk.Toplevel):
             expected_bit and isinstance(bits,(list,tuple)) and
             (expected_bit-1)<len(bits) and bits[expected_bit-1]==1
         )
-        if get_selector_expected_error() and expected_size and expected_bit:
+        if get_selector_expected_error() and expected_bit:
             if active_wrong:
                 if expected_is_active:
                     return (f"Wrong bit taken: {', '.join(active_wrong_names)}. Put back wrong bit(s) only.", P_RED)
-                return (f"Wrong bit taken: {', '.join(active_wrong_names)}. Put back, then take {expected_size}.", P_RED)
-            return (f"Error: put back {expected_size} (bit {expected_bit}). Take it again.", P_RED)
-        if missing_bits and not expected_size:
+                return (f"Wrong bit taken: {', '.join(active_wrong_names)}. Put back, then take {expected_bit}.", P_RED)
+            return (f"Error: put back bit {expected_bit}. Take it again.", P_RED)
+        if missing_bits and not expected_bit:
             return (f"Put back: {', '.join(missing_names)}.", "#facc15")
         if active_wrong:
             if expected_is_active:
                 return (f"Wrong bit(s) taken: {', '.join(active_wrong_names)}. Put back wrong bit(s) only.", P_RED)
-            return (f"Wrong bit taken: {', '.join(active_wrong_names)}. Please take {expected_size or 'correct bit'}.", P_RED)
-        if expected_size and expected_bit:
+            return (f"Wrong bit taken: {', '.join(active_wrong_names)}. Please take {expected_bit or 'correct bit'}.", P_RED)
+        if expected_bit:
             if isinstance(bits,(list,tuple)) and (expected_bit-1)<len(bits) and bits[expected_bit-1]==1:
-                return f"{expected_size} selected. Ready.", P_GREEN
-            return f"Please take {expected_size}.", P_CYAN
+                return f"Bit {expected_bit} selected. Ready.", P_GREEN
+            return f"Please take bit {expected_bit}.", P_CYAN
         return "Waiting...", P_CYAN
 
     def _build_torque(self):
@@ -2313,12 +2403,9 @@ class CornerMonitor(tk.Toplevel):
             self._tw["mx"].configure(text=f"\u21910{d.max_tightening_angle}")
             self._spv.configure(text=str(int(round(self._asp.value))))
 
-            bits = get_latest_selector_bits(); expected_size, wrong_bits = get_selector_guidance()
-            missing_bits = get_missing_selector_bits(); expected_bit = None
-            if expected_size:
-                try: expected_bit = get_selector_bit_index_for_size(expected_size)
-                except Exception: pass
-            selector_msg, selector_color = self._build_selector_message(bits, expected_size, wrong_bits, missing_bits)
+            bits = get_latest_selector_bits(); expected_bit, wrong_bits = get_selector_guidance()
+            missing_bits = get_missing_selector_bits()
+            selector_msg, selector_color = self._build_selector_message(bits, expected_bit, wrong_bits, missing_bits)
             self._set_selector_message(selector_msg, selector_color)
             stop_wait_active, _ = get_selector_stop_wait()
             for i, led in enumerate(self._leds):
@@ -2391,15 +2478,19 @@ def boot_runtime():
 
 def run_desktop_app():
     global corner_monitor, ui_root
-    root = tk.Tk(); root.withdraw(); ui_root = root
-    corner_monitor = CornerMonitor(root); corner_monitor.withdraw()
-    log_debug("[UI] Corner monitor ready (hidden)")
+    root = tk.Tk()
+    root.withdraw()
+    ui_root = root
+    corner_monitor = None
+    log_debug("[UI] UI runtime ready (corner monitor not created yet)")
     boot_runtime()
     try:
         root.mainloop()
     finally:
-        if live_worker:     live_worker.stop()
-        if selector_worker: selector_worker.stop()
+        if live_worker:
+            live_worker.stop()
+        if selector_worker:
+            selector_worker.stop()
 
 def main():
     run_desktop_app()

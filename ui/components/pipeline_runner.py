@@ -280,7 +280,7 @@ class PipelineRunner:
             if not os.path.exists(target_folder):
                 return False, ""
             import glob
-            json_files = glob.glob(os.path.join(target_folder, "*.json"))
+            json_files = glob.glob(os.path.join(target_folder, "box_world*.json"))
             if not json_files:
                 return False, ""
             latest_json = max(json_files, key=os.path.getmtime)
@@ -308,6 +308,144 @@ class PipelineRunner:
         except Exception as e:
             print(f"❌ Error sending coordinates: {e}")
             return False, ""
+
+    @staticmethod
+    def _load_latest_points_from_folder(recipe_name: str, folder_name: str, block_id: str):
+        try:
+            recipe_folder = config_manager.get_recipe_folder(recipe_name)
+            if not recipe_folder:
+                return None
+
+            target_folder = os.path.join(recipe_folder, folder_name, f"Block_{block_id}")
+            if not os.path.exists(target_folder):
+                print(f"[OTHER OBJ] Folder not found: {target_folder}")
+                return None
+
+            import glob
+            json_files = glob.glob(os.path.join(target_folder, "*.json"))
+            if not json_files:
+                print(f"[OTHER OBJ] No JSON found in: {target_folder}")
+                return None
+
+            latest_json = max(json_files, key=os.path.getmtime)
+            with open(latest_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            points = []
+            if isinstance(data, list):
+                for p in data:
+                    if isinstance(p, (list, tuple)) and len(p) >= 2:
+                        points.append((float(p[0]), float(p[1])))
+                    elif isinstance(p, dict):
+                        x = p.get("x")
+                        y = p.get("y")
+                        if x is not None and y is not None:
+                            points.append((float(x), float(y)))
+
+            if len(points) < 2:
+                print(f"[OTHER OBJ] Not enough points in: {latest_json}")
+                return None
+
+            return {
+                "json_path": latest_json,
+                "points": points
+            }
+
+        except Exception as e:
+            print(f"❌ Error loading latest points from folder: {e}")
+            return None
+
+    @staticmethod
+    def _load_all_points_from_folder(recipe_name: str, folder_name: str, exclude_block_id: str = None):
+        try:
+            recipe_folder = config_manager.get_recipe_folder(recipe_name)
+            if not recipe_folder:
+                return []
+
+            base_folder = os.path.join(recipe_folder, folder_name)
+            if not os.path.exists(base_folder):
+                print(f"[OTHER OBJ] Base folder not found: {base_folder}")
+                return []
+
+            import glob
+
+            results = []
+            block_dirs = glob.glob(os.path.join(base_folder, "Block_*"))
+
+            for block_dir in block_dirs:
+                try:
+                    block_name = os.path.basename(block_dir)  # e.g. Block_1
+                    this_block_id = block_name.replace("Block_", "").strip()
+
+                    # ✅ only exclude by block id here
+                    if exclude_block_id is not None and str(this_block_id) == str(exclude_block_id):
+                        continue
+
+                    json_files = glob.glob(os.path.join(block_dir, "*.json"))
+                    if not json_files:
+                        continue
+
+                    latest_json = max(json_files, key=os.path.getmtime)
+                    with open(latest_json, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+
+                    points = []
+                    if isinstance(data, list):
+                        for p in data:
+                            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                                points.append((float(p[0]), float(p[1])))
+                            elif isinstance(p, dict):
+                                x = p.get("x")
+                                y = p.get("y")
+                                if x is not None and y is not None:
+                                    points.append((float(x), float(y)))
+
+                    if len(points) < 2:
+                        continue
+
+                    results.append({
+                        "block_id": this_block_id,
+                        "block_name": block_name,
+                        "json_path": latest_json,
+                        "points": points
+                    })
+
+                except Exception as e:
+                    print(f"[OTHER OBJ] Failed reading {block_dir}: {e}")
+
+            return results
+
+        except Exception as e:
+            print(f"❌ Error loading all points from folder: {e}")
+            return []
+
+    @staticmethod
+    def _points_to_other_prediction(points_data, class_name="OTHER_OBJECT"):
+        try:
+            if not points_data or "points" not in points_data:
+                return None
+
+            pts = points_data["points"]
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+
+            x1 = min(xs)
+            y1 = min(ys)
+            x2 = max(xs)
+            y2 = max(ys)
+
+            return {
+                "bbox": [x1, y1, x2, y2],
+                "class_id": -999,
+                "class_name": class_name,
+                "confidence": 1.0,
+                "source": "json",
+                "corners": [[float(x), float(y)] for x, y in pts],
+                "json_path": points_data.get("json_path", "")
+            }
+        except Exception as e:
+            print(f"❌ Error converting JSON points to other prediction: {e}")
+            return None
 
     @staticmethod
     def _show_video_dialog(video_path: str, parent_widget=None, title: str = "Video") -> bool:
@@ -2304,6 +2442,15 @@ class PipelineRunner:
                 show_results()
                 verify_btn.setEnabled(False)
                 retry_btn.setEnabled(True)
+
+                try:
+                    if hasattr(orbbec_thread, "clear_external_target_bbox"):
+                        orbbec_thread.clear_external_target_bbox()
+                    if hasattr(orbbec_thread, "clear_all_detection_boxes"):
+                        orbbec_thread.clear_all_detection_boxes()
+                except Exception as e:
+                    print(f"❌ Failed to clear Orbbec boxes after capture fail: {e}")
+
                 disable_mainpage_start_trigger()
                 PipelineRunner.set_orbbec_trigger(orbbec_thread, on_retry_hand_trigger, state="idle")
                 return
@@ -2325,6 +2472,15 @@ class PipelineRunner:
                         "font-size:12px;color:#FFAA00;font-weight:900;font-family:Consolas;padding:0px 10px;background:#030810;border-bottom:1px solid #0E2A40;")
                     show_results()
                     retry_btn.setEnabled(True)
+
+                    try:
+                        if hasattr(orbbec_thread, "clear_external_target_bbox"):
+                            orbbec_thread.clear_external_target_bbox()
+                        if hasattr(orbbec_thread, "clear_all_detection_boxes"):
+                            orbbec_thread.clear_all_detection_boxes()
+                    except Exception as e:
+                        print(f"❌ Failed to clear Orbbec boxes when no model: {e}")
+
                     disable_mainpage_start_trigger()
                     PipelineRunner.set_orbbec_trigger(orbbec_thread, on_retry_hand_trigger, state="idle")
                     verify_btn.setEnabled(False)
@@ -2370,10 +2526,51 @@ class PipelineRunner:
 
                     if pred_clean == target_clean:
                         target_predictions.append(pred)
-                        print(f"   ✅ MATCH! -> target")
+                        print("   ✅ MATCH! -> target")
                     else:
                         other_predictions.append(pred)
-                        print(f"   ❌ OTHER")
+                        print("   ❌ OTHER")
+
+                # Load ALL other-object boxes from ScrewBoxesData (ALL blocks)
+                try:
+                    json_other_predictions = []
+
+                    recipe_name_local = recipe_name
+                    block_id_local = str(block_id)
+
+                    # ✅ only exclude current block if this is a screw step
+                    is_screw_step = False
+                    try:
+                        is_screw_step = str(block_type).lower() == "screw"
+                    except Exception:
+                        pass
+
+                    all_screw_others = PipelineRunner._load_all_points_from_folder(
+                        recipe_name_local,
+                        "ScrewBoxesData",
+                        exclude_block_id=block_id_local if is_screw_step else None
+                    )
+
+                    for item in all_screw_others:
+                        pred = PipelineRunner._points_to_other_prediction(
+                            item,
+                            class_name=f"OTHER_OBJECT_{item.get('block_name', 'UNKNOWN')}"
+                        )
+                        if pred:
+                            pred["source"] = "json"
+                            pred["json_type"] = "orbbec"
+                            pred["block_id"] = item.get("block_id")
+
+                            json_other_predictions.append(pred)
+
+                            print(f"[OTHER JSON] Loaded {item.get('block_name')} -> {pred.get('bbox')}")
+
+                    if json_other_predictions:
+                        other_predictions.extend(json_other_predictions)
+                        print(f"[OTHER] Total JSON boxes loaded: {len(json_other_predictions)}")
+
+                except Exception as e:
+                    print(f"[OTHER JSON] Failed to load JSON other objects: {e}")
 
                 best_target = None
                 predictions_for_sending = []
@@ -2381,7 +2578,6 @@ class PipelineRunner:
                 if target_predictions:
                     best_target = max(target_predictions, key=lambda p: p.get('confidence', 0))
 
-                    # Prepare target for immediate coordinate sending
                     try:
                         bbox = best_target.get('bbox', [])
                         conf_val = float(best_target.get('confidence', 0.0))
@@ -2397,35 +2593,61 @@ class PipelineRunner:
                         print(f"❌ Failed to prepare predictions_for_sending: {e}")
                         predictions_for_sending = []
 
-                try:
-                    best_bbox = best_target.get('bbox', None) if best_target else None
-                    manager.set_boxes(
-                        target=best_bbox,
-                        others=other_predictions if best_target else None
-                    )
-
-                    if best_bbox:
-                        print(f"[TARGET] {product_name} at {best_bbox}")
-
-                    if best_target and other_predictions:
-                        for obj in other_predictions:
-                            print(f"[OTHER] {obj['class_name']} at {obj['bbox']}")
-                except Exception as e:
-                    print(f"[Orbbec] ❌ box update error: {e}")
-
-                    if best_bbox:
-                        print(f"[TARGET] {product_name} at {best_bbox}")
-
-                    if best_target and other_predictions:
-                        for obj in other_predictions:
-                            print(f"[OTHER] {obj['class_name']} at {obj['bbox']}")
-
                 target_found = best_target is not None
                 target_detected_successfully = target_found
 
-                if not target_found and manager.thread is not None:
+                # =========================
+                # UPDATE ORBBEC BOXES
+                # =========================
+                try:
+                    best_bbox = best_target.get('bbox', None) if best_target else None
+
+                    # TARGET BOX -> use dedicated target channel
+                    if best_bbox and hasattr(orbbec_thread, "set_external_target_bbox"):
+                        # IMPORTANT:
+                        # set_external_target_bbox() in Orbbec thread already does homography mapping
+                        orbbec_thread.set_external_target_bbox(best_bbox)
+                        print(f"[TARGET] {product_name} at {best_bbox}")
+                        print("[TARGET] SENT to Orbbec")
+                    else:
+                        if hasattr(orbbec_thread, "clear_external_target_bbox"):
+                            orbbec_thread.clear_external_target_bbox()
+                            print("[TARGET] Cleared")
+
+                    # OTHER BOXES -> use all_detection_boxes channel
+                    all_boxes = []
+                    for obj in other_predictions:
+                        try:
+                            bbox = obj.get("bbox", [])
+                            class_name = obj.get("class_name", "UNKNOWN")
+                            confidence = float(obj.get("confidence", 0.0))
+
+                            all_boxes.append({
+                                "bbox": bbox,
+                                "class_name": class_name,
+                                "confidence": confidence,
+                                "source": obj.get("source", "yolo")
+                            })
+                        except Exception as e:
+                            print(f"❌ Failed to append other box: {e}")
+
+                    if hasattr(orbbec_thread, "set_all_detection_boxes"):
+                        orbbec_thread.set_all_detection_boxes(all_boxes)
+                        print(f"[OTHER] Sent {len(all_boxes)} boxes to Orbbec thread")
+
+                    if other_predictions:
+                        for obj in other_predictions:
+                            print(f"[OTHER] {obj.get('class_name', 'UNKNOWN')} at {obj.get('bbox')}")
+
+                except Exception as e:
+                    print(f"[Orbbec] ❌ box update error: {e}")
+
+                if not target_found and not other_predictions:
                     try:
-                        manager.clear_boxes()
+                        if hasattr(orbbec_thread, "clear_external_target_bbox"):
+                            orbbec_thread.clear_external_target_bbox()
+                        if hasattr(orbbec_thread, "clear_all_detection_boxes"):
+                            orbbec_thread.clear_all_detection_boxes()
                     except Exception as e:
                         print(f"❌ Failed to clear Orbbec target bbox: {e}")
 
@@ -2543,6 +2765,15 @@ class PipelineRunner:
                 show_results()
                 verify_btn.setEnabled(False)
                 retry_btn.setEnabled(True)
+
+                try:
+                    if hasattr(orbbec_thread, "clear_external_target_bbox"):
+                        orbbec_thread.clear_external_target_bbox()
+                    if hasattr(orbbec_thread, "clear_all_detection_boxes"):
+                        orbbec_thread.clear_all_detection_boxes()
+                except Exception as clear_e:
+                    print(f"❌ Failed to clear Orbbec boxes after detection error: {clear_e}")
+
                 disable_mainpage_start_trigger()
                 PipelineRunner.set_orbbec_trigger(orbbec_thread, on_retry_hand_trigger, state="idle")
                 import traceback

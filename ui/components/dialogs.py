@@ -5365,6 +5365,12 @@ class ScrewDialog(QDialog):
         self.length_spinbox.setStyleSheet("font-size: 14px; padding: 5px;")
         layout.addRow("📏 Length:", self.length_spinbox)
 
+        self.screw_bit_combo = QComboBox()
+        self.screw_bit_combo.addItems(["1", "2", "3", "4", "5", "6"])
+        self.screw_bit_combo.setCurrentText("1")
+        self.screw_bit_combo.setStyleSheet("font-size: 14px; padding: 5px;")
+        layout.addRow("⚙️ Bit Number:", self.screw_bit_combo)
+
         self.screw_location_btn = QPushButton("🔩 Pick Screw Location")
         self.screw_location_btn.setStyleSheet("""
             QPushButton {
@@ -5440,6 +5446,7 @@ class ScrewDialog(QDialog):
         self.screw_type_combo.setCurrentText(str(config.get("type", "M4")))
         self.torque_spinbox.setValue(int(config.get("torque", 10)))
         self.length_spinbox.setValue(int(config.get("length", 10) or 10))
+        self.screw_bit_combo.setCurrentText(str(config.get("bit", "1")))
         self.uploaded_video_path = config.get("uploaded_video_path", "")
 
     def get_config(self):
@@ -5451,6 +5458,7 @@ class ScrewDialog(QDialog):
             "type": str(self.screw_type_combo.currentText()),
             "torque": int(self.torque_spinbox.value()),
             "length": self.length_spinbox.value(),
+            "bit": str(self.screw_bit_combo.currentText()),
             "position": f"ScrewBoxesData/Block_{self.block_id}",
             "position2": f"ScrewBoxesData2/Block_{self.block_id}",
             "uploaded_video_path": str(self.uploaded_video_path) if self.uploaded_video_path else ""
