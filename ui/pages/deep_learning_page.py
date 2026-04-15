@@ -1950,15 +1950,15 @@ class DeepLearningPage(QWidget):
 
             # CRITICAL: Override the model's number of classes
             # This ensures the model only predicts your classes
-            if hasattr(model, 'model') and hasattr(model.model, 'model'):
-                # For YOLOv8/v11
-                nc = model.model.model[-1].nc
-                if nc != num_classes:
-                    print(f"⚠️ Adjusting model classes from {nc} to {num_classes}")
-                    model.model.model[-1].nc = num_classes
-                    # Reinitialize the classification head
-                    from ultralytics.nn.tasks import attempt_load_one_weight
-                    model.model.model[-1].reset_parameters()
+            # if hasattr(model, 'model') and hasattr(model.model, 'model'):
+            #     # For YOLOv8/v11
+            #     nc = model.model.model[-1].nc
+            #     if nc != num_classes:
+            #         print(f"⚠️ Adjusting model classes from {nc} to {num_classes}")
+            #         model.model.model[-1].nc = num_classes
+            #         # Reinitialize the classification head
+            #         #from ultralytics.nn.tasks import attempt_load_one_weight
+            #         model.model.model[-1].reset_parameters()
 
             self.training_signals.progress.emit(5, f"Model {model_name} loaded with {num_classes} classes",
                                                 "Preparing dataset...")
@@ -2004,7 +2004,6 @@ class DeepLearningPage(QWidget):
                     copy_paste=0.0,
                     dropout=0.1,
                     conf=0.3,
-                    fl_gamma=1.5,
                 )
 
                 print(f"✅ Training complete. Model trained on {num_classes} classes")

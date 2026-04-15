@@ -5354,7 +5354,7 @@ class ScrewDialog(QDialog):
         self.torque_spinbox = QSpinBox()
         self.torque_spinbox.setRange(1, 100)
         self.torque_spinbox.setValue(10)
-        self.torque_spinbox.setSuffix(" N·m")
+        self.torque_spinbox.setSuffix(" kgf.cm")
         self.torque_spinbox.setStyleSheet("font-size: 14px; padding: 5px;")
         layout.addRow("💪 Torque:", self.torque_spinbox)
 

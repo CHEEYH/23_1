@@ -113,27 +113,177 @@ class PipelineRunner:
         return None
 
     @staticmethod
-    def set_orbbec_trigger(thread, handler, state="idle"):
+    def set_orbbec_trigger(thread, handler, state="idle", signal_type=None):
+        """
+        state:
+            idle              -> MainPage start / QR popup
+            waiting_qr        -> MainPage confirm QR
+            assembly          -> Assembly verify / retry
+            result            -> Assembly result continue
+            screw             -> Screw operation trigger
+            video             -> Screw video trigger
+            missing_decision  -> Missing object continue / stop
+
+        signal_type:
+            None / "auto" -> auto infer by state
+            "start"       -> start_pipeline_signal
+            "confirm"     -> confirm_qr_signal
+            "continue"    -> trigger_continue_signal
+            "stop"        -> trigger_stop_signal
+        """
         if not thread:
             return
 
+        for sig_name in (
+            "start_pipeline_signal",
+            "confirm_qr_signal",
+            "trigger_continue_signal",
+            "trigger_stop_signal",
+        ):
+            try:
+                sig = getattr(thread, sig_name, None)
+                if sig is not None:
+                    sig.disconnect()
+            except Exception:
+                pass
+
         try:
-            thread.start_pipeline_signal.disconnect()
-        except:
+            thread.set_trigger_state(state)
+        except Exception as e:
+            print(f"[PipelineRunner] set_trigger_state error: {e}")
+
+        try:
+            thread.trigger_was_used = False
+        except Exception:
             pass
 
         try:
-            thread.confirm_qr_signal.disconnect()
-        except:
+            thread.trigger_enter_time = None
+        except Exception:
             pass
 
-        thread.set_trigger_state(state)
-        thread.trigger_was_used = False
-        thread.trigger_enter_time = None
-        thread.use_trigger_boxes = True
+        try:
+            thread.use_trigger_boxes = True
+        except Exception:
+            pass
 
-        if handler:
-            thread.start_pipeline_signal.connect(handler)
+        if not handler:
+            return
+
+        if signal_type in (None, "auto"):
+            if state == "idle":
+                signal_type = "start"
+            elif state == "waiting_qr":
+                signal_type = "confirm"
+            elif state == "missing_decision":
+                signal_type = "continue"
+            elif state in ("assembly", "result", "screw", "video"):
+                signal_type = "start"
+            else:
+                signal_type = "start"
+
+        try:
+            if signal_type == "start":
+                thread.start_pipeline_signal.connect(handler)
+            elif signal_type == "confirm":
+                thread.confirm_qr_signal.connect(handler)
+            elif signal_type == "continue":
+                thread.trigger_continue_signal.connect(handler)
+            elif signal_type == "stop":
+                thread.trigger_stop_signal.connect(handler)
+            else:
+                thread.start_pipeline_signal.connect(handler)
+        except Exception as e:
+            print(f"[PipelineRunner] set_orbbec_trigger connect error: {e}")
+
+    @staticmethod
+    def _find_main_page():
+        """
+        Find MainPage as robustly as possible.
+        Supports:
+        - top-level MainPage window
+        - wrapper window with .main_page
+        - child widgets/dialogs whose parent chain contains MainPage
+        """
+        try:
+            from PySide6.QtWidgets import QApplication
+
+            widgets = list(QApplication.topLevelWidgets())
+
+            # Pass 1: exact top-level MainPage
+            for w in widgets:
+                try:
+                    if w.__class__.__name__ == "MainPage":
+                        return w
+                except Exception:
+                    pass
+
+            # Pass 2: wrapper window containing .main_page
+            for w in widgets:
+                try:
+                    mp = getattr(w, "main_page", None)
+                    if mp is not None:
+                        return mp
+                except Exception:
+                    pass
+
+            # Pass 3: search parent chain from every top-level widget
+            for w in widgets:
+                try:
+                    cur = w
+                    visited = set()
+                    while cur is not None and id(cur) not in visited:
+                        visited.add(id(cur))
+
+                        if cur.__class__.__name__ == "MainPage":
+                            return cur
+
+                        mp = getattr(cur, "main_page", None)
+                        if mp is not None:
+                            return mp
+
+                        cur = cur.parentWidget() if hasattr(cur, "parentWidget") else None
+                except Exception:
+                    pass
+
+            # Pass 4: search QApplication.allWidgets() as fallback
+            try:
+                for w in QApplication.allWidgets():
+                    try:
+                        if w.__class__.__name__ == "MainPage":
+                            return w
+                        mp = getattr(w, "main_page", None)
+                        if mp is not None:
+                            return mp
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        except Exception as e:
+            print(f"[PipelineRunner] _find_main_page error: {e}")
+
+        return None
+
+    @staticmethod
+    def restore_mainpage_orbbec_trigger(orbbec_thread, reason=""):
+        try:
+            main_page = PipelineRunner._find_main_page()
+
+            if not main_page:
+                print(f"[PipelineRunner] ❌ MainPage not found ({reason})")
+                return False
+
+            # 🔥 最关键：重新接回 MainPage handler
+            if hasattr(main_page, "connect_orbbec_trigger"):
+                main_page.connect_orbbec_trigger(orbbec_thread)
+
+            print(f"[PipelineRunner] ✅ Restored MainPage trigger via connect_orbbec_trigger ({reason})")
+            return True
+
+        except Exception as e:
+            print(f"[PipelineRunner] restore error ({reason}): {e}")
+            return False
 
     @staticmethod
     def init_api_client():
@@ -568,11 +718,11 @@ class PipelineRunner:
                 close_btn.clicked.connect(close_missing_video)
                 layout.addWidget(close_btn, alignment=Qt.AlignCenter)
 
-                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_video_hand_trigger_missing, state="idle")
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_video_hand_trigger_missing, state="video", signal_type="start")
 
                 def restore_trigger_missing(_=None):
                     try:
-                        PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
+                        PipelineRunner.restore_mainpage_orbbec_trigger(orbbec_thread, reason="screw_video_missing")
                     except Exception as e:
                         print(f"[SCREW VIDEO] Restore trigger error (missing video): {e}")
 
@@ -674,12 +824,12 @@ class PipelineRunner:
                     pass
 
                 try:
-                    PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
-                    print("[SCREW VIDEO] Trigger restored/cleared")
+                    PipelineRunner.restore_mainpage_orbbec_trigger(orbbec_thread, reason="screw_video_close")
+                    print("[SCREW VIDEO] Trigger restored to MainPage")
                 except Exception as e:
                     print(f"[SCREW VIDEO] Restore trigger error: {e}")
 
-            PipelineRunner.set_orbbec_trigger(orbbec_thread, on_video_hand_trigger, state="idle")
+            PipelineRunner.set_orbbec_trigger(orbbec_thread, on_video_hand_trigger, state="video", signal_type="start")
             dialog.finished.connect(restore_trigger)
 
             return dialog.exec() == QDialog.Accepted
@@ -1124,15 +1274,14 @@ class PipelineRunner:
 
                 def _cleanup_complete_dialog(*_):
                     try:
-                        PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
-                        print("[ASSEMBLY COMPLETE] Trigger cleared")
+                        PipelineRunner.restore_mainpage_orbbec_trigger(orbbec_thread, reason="assembly_complete_dialog")
                     except Exception as e:
                         print(f"[ASSEMBLY COMPLETE] Cleanup trigger error: {e}")
 
                 ok_btn.clicked.connect(on_complete_continue)
                 suc_layout.addWidget(ok_btn)
 
-                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_complete_hand_trigger, state="idle")
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_complete_hand_trigger, state="result", signal_type="start")
                 success_dialog.finished.connect(_cleanup_complete_dialog)
 
                 success_dialog.exec()
@@ -1993,7 +2142,7 @@ class PipelineRunner:
                 ("SCREW COUNT", str(screw_count), "pcs"),
                 ("SCREW TYPE", str(screw_type), ""),
                 ("SCREW LENGTH", str(screw_length), "mm"),
-                ("TORQUE", str(torque), "Nm"),
+                ("TORQUE", str(torque), "kgf.cm"),
             ]
 
             for i, (lbl, val, unit) in enumerate(screw_data_pairs):
@@ -3030,7 +3179,7 @@ class PipelineRunner:
                 except Exception as e:
                     print(f"[Assembly Step] Failed to disable MainPage start trigger: {e}")
 
-                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_pipeline_trigger_from_orbbec, state="idle")
+                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_pipeline_trigger_from_orbbec, state="assembly", signal_type="start")
 
                 print("[Assembly Step] ✅ Using OrbbecManager")
             except Exception as e:

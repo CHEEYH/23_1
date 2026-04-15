@@ -168,7 +168,7 @@ class OrbbecCameraThread(QThread):
         # ===== UI delay control =====
         self.ok_enter_time = None
         self.ng_enter_time = None
-        self.ui_delay_sec = 1.0
+        self.ui_delay_sec = 0.5
         # ===========================
 
     def stop(self):
@@ -413,20 +413,33 @@ class OrbbecCameraThread(QThread):
 
         return frame
 
-    # Add this method to be called from draw_hands_and_target
     def update_trigger_logic(self, hand_in_box, current_time):
-        """Handle trigger state machine"""
+        """Handle trigger state machine safely"""
         if not self.use_trigger_boxes:
+            return
+
+        if current_time is None:
             return
 
         if self.trigger_state == "confirmed":
             return
+
+        # safety guards
+        if self.trigger_enter_time is not None and not isinstance(self.trigger_enter_time, (int, float)):
+            self.trigger_enter_time = None
+
+        if self.trigger_mode == "missing_decision" and self.trigger_last_stage is None:
+            self.trigger_last_stage = None
 
         if hand_in_box and not self.trigger_was_used:
             if self.trigger_enter_time is None:
                 self.trigger_enter_time = current_time
                 self.trigger_last_stage = None
                 self.status_signal.emit(f"Hand in trigger box - holding to {self.trigger_state}")
+                return
+
+            if self.trigger_enter_time is None:
+                return
 
             elapsed = current_time - self.trigger_enter_time
 
@@ -445,7 +458,6 @@ class OrbbecCameraThread(QThread):
                     if self.trigger_last_stage != "continue_ready":
                         self.trigger_last_stage = "continue_ready"
                         self.status_signal.emit("Hold 3s reached - release now to continue")
-
                 return
 
             # ===== Normal mode =====
@@ -463,9 +475,34 @@ class OrbbecCameraThread(QThread):
                     self.status_signal.emit("QR confirmed! Starting assembly...")
                     self.confirm_qr_signal.emit()
 
+                elif self.trigger_state == "assembly":
+                    print("[Orbbec] 🖐️ Assembly trigger - verify/continue")
+                    self.status_signal.emit("Assembly trigger detected")
+                    self.start_pipeline_signal.emit()
+
+                elif self.trigger_state == "result":
+                    print("[Orbbec] 🖐️ Result trigger - continue")
+                    self.status_signal.emit("Result continue trigger")
+                    self.start_pipeline_signal.emit()
+
+                elif self.trigger_state == "screw":
+                    print("[Orbbec] 🖐️ Screw trigger")
+                    self.status_signal.emit("Screw trigger detected")
+                    self.start_pipeline_signal.emit()
+
+                elif self.trigger_state == "video":
+                    print("[Orbbec] 🖐️ Video trigger - continue")
+                    self.status_signal.emit("Video continue trigger")
+                    self.start_pipeline_signal.emit()
+
+                else:
+                    print(f"[Orbbec] 🖐️ Unknown trigger state '{self.trigger_state}' - fallback start")
+                    self.status_signal.emit(f"Trigger fallback for state: {self.trigger_state}")
+                    self.start_pipeline_signal.emit()
+
         else:
             # Hand left box
-            if self.trigger_enter_time is not None:
+            if self.trigger_enter_time is not None and isinstance(self.trigger_enter_time, (int, float)):
                 elapsed = current_time - self.trigger_enter_time
 
                 if self.trigger_mode == "missing_decision":

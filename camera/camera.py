@@ -89,7 +89,7 @@ def AutoCaptureFlow(callback=None):
     print("Device opened successfully!\n")
 
     # set parameter xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxvalue
-    m_currentCam.SciCam_SetFloatValueEx(0, "ExposureTime", 15000)
+    m_currentCam.SciCam_SetFloatValueEx(0, "ExposureTime", 8000)
 
     # Step 3: Start grabbing
     print("[Step 3/6] Starting grabbing...")
