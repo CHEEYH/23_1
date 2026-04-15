@@ -57,6 +57,10 @@ class OrbbecCameraThread(QThread):
     trigger_continue_signal = Signal()  # Hold 3s
     trigger_stop_signal = Signal()  # Hold 5s
 
+    ok_status_signal = Signal()
+    ng_status_signal = Signal(str)
+    idle_status_signal = Signal()
+
     def __init__(self):
         super().__init__()
         self.running = True
@@ -98,6 +102,9 @@ class OrbbecCameraThread(QThread):
 
         self.wrong_location_enter_time = None
         self.wrong_location_delay_sec = 1
+
+        self.clear_error_delay_sec = 0.35  # 50ms
+        self.clear_error_start_time = None
 
         # ========== SINGLE TRIGGER BOX WITH STATE ==========
         self.trigger_box = None
@@ -152,6 +159,17 @@ class OrbbecCameraThread(QThread):
         # ========== TRACK ERROR STATE ==========
         self.error_sent = False  # Track if error message already sent
         # ======================================
+
+        # ========== UI STATUS STATE ==========
+        self._last_ui_status = "idle"  # idle / ok / ng
+        self._last_ng_name = ""
+        # ====================================
+
+        # ===== UI delay control =====
+        self.ok_enter_time = None
+        self.ng_enter_time = None
+        self.ui_delay_sec = 1.0
+        # ===========================
 
     def stop(self):
         self.running = False
@@ -979,50 +997,22 @@ class OrbbecCameraThread(QThread):
                             break
             # =============================================
 
-        # ========== TARGET BOX ALARM LOGIC ==========
+        # ========== TARGET BOX OK LOGIC ==========
         current_time = time.perf_counter()
 
         if hit_target:
-            if self.target_enter_time is None:
-                self.target_enter_time = current_time
-
-            elapsed_in_target = current_time - self.target_enter_time
-            remain = max(0.0, self.alarm_delay_sec - elapsed_in_target)
+            self.target_enter_time = current_time if self.target_enter_time is None else self.target_enter_time
+            self.warning_active = False
 
             cv2.putText(
                 frame,
-                f"In target: {elapsed_in_target:.2f}s",
-                (10, h - 50),
+                "OK: HAND INSIDE TARGET",
+                (10, h - 15),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 255),
+                0.8,
+                (0, 255, 0),
                 2
             )
-
-            if elapsed_in_target >= self.alarm_delay_sec:
-                self.warning_active = True
-                self.play_alarm_sound_async()
-
-                cv2.putText(
-                    frame,
-                    "WARNING: HAND INSIDE TARGET",
-                    (10, h - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 0, 255),
-                    2
-                )
-            else:
-                self.warning_active = False
-                cv2.putText(
-                    frame,
-                    f"Alarm in: {remain:.2f}s",
-                    (10, h - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 255),
-                    2
-                )
         else:
             self.target_enter_time = None
             self.warning_active = False
@@ -1040,7 +1030,7 @@ class OrbbecCameraThread(QThread):
                 remain = max(0.0, self.wrong_location_delay_sec - elapsed_in_wrong)
                 cv2.putText(
                     frame,
-                    f"Wrong location in: {remain:.1f}s",
+                    f"{remain:.1f}s",
                     (10, h - 80),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -1058,7 +1048,7 @@ class OrbbecCameraThread(QThread):
                 self.play_wrong_location_sound_async()
                 cv2.putText(
                     frame,
-                    f"⚠ WRONG LOCATION! Hand on {wrong_location_name}",
+                    f"WRONG LOCATION! Hand on {wrong_location_name}",
                     (10, h - 110),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7,
@@ -1066,11 +1056,60 @@ class OrbbecCameraThread(QThread):
                     2
                 )
         else:
+
             if self.wrong_location_enter_time is not None:
                 self.wrong_location_enter_time = None
-                if self.error_sent:
+                self.clear_error_start_time = current_time
+
+            if self.clear_error_start_time is not None:
+                elapsed_clear = current_time - self.clear_error_start_time
+
+                if elapsed_clear >= self.clear_error_delay_sec:
                     self.send_tcp_message_async("clear_error")
                     self.error_sent = False
+                    self.clear_error_start_time = None
+
+                    print("📤 [TCP] clear_error (after 50ms delay)")
+
+        # ========== UI OK / NG / IDLE STATUS ==========
+        current_time = time.perf_counter()
+
+        # ===== NG（wrong location）=====
+        if hand_in_wrong_location and not hit_target:
+            if self.ng_enter_time is None:
+                self.ng_enter_time = current_time
+
+            elapsed_ng = current_time - self.ng_enter_time
+
+            if elapsed_ng >= self.ui_delay_sec:
+                self._emit_ui_status("ng", wrong_location_name or "")
+            else:
+                # 還沒到1秒 → 不顯示
+                self._emit_ui_status("idle")
+
+            # reset OK timer
+            self.ok_enter_time = None
+
+        # ===== OK（target）=====
+        elif hit_target:
+            if self.ok_enter_time is None:
+                self.ok_enter_time = current_time
+
+            elapsed_ok = current_time - self.ok_enter_time
+
+            if elapsed_ok >= self.ui_delay_sec:
+                self._emit_ui_status("ok")
+            else:
+                self._emit_ui_status("idle")
+
+            # reset NG timer
+            self.ng_enter_time = None
+
+        # ===== IDLE =====
+        else:
+            self.ok_enter_time = None
+            self.ng_enter_time = None
+            self._emit_ui_status("idle")
 
         # ========== DRAW ALL DETECTION BOXES (for wrong location visual) ==========
         if hasattr(self, 'all_detection_boxes') and self.all_detection_boxes:
@@ -1144,6 +1183,33 @@ class OrbbecCameraThread(QThread):
                 pass
 
         threading.Thread(target=_send, daemon=True).start()
+
+    def _emit_ui_status(self, status, ng_name=""):
+        """
+        Emit UI-only status signals without spamming repeated emits.
+        status: idle / ok / ng
+        """
+        try:
+            if status == "ok":
+                if self._last_ui_status != "ok":
+                    self.ok_status_signal.emit()
+                self._last_ui_status = "ok"
+                self._last_ng_name = ""
+
+            elif status == "ng":
+                if self._last_ui_status != "ng" or self._last_ng_name != ng_name:
+                    self.ng_status_signal.emit(ng_name or "")
+                self._last_ui_status = "ng"
+                self._last_ng_name = ng_name or ""
+
+            else:
+                if self._last_ui_status != "idle":
+                    self.idle_status_signal.emit()
+                self._last_ui_status = "idle"
+                self._last_ng_name = ""
+
+        except Exception as e:
+            print(f"[Orbbec] UI status emit error: {e}")
 
     def run(self):
         try:

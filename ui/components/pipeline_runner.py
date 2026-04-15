@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QDialog, QVBoxLayout, QLabel, QPushButton,
     QFrame, QHBoxLayout, QGridLayout, QSplitter, QWidget, QSizePolicy, QApplication
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPixmap, QImage
 from ui.components.heartbeat_manager import HeartbeatManager
 from ui.components.dialogs import Calibration  # Import the Calibration class
@@ -1552,6 +1552,7 @@ class PipelineRunner:
     @staticmethod
     def _execute_screw_block(block_data: Dict, step_number: int, total_steps: int, parent_widget) -> bool:
         from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QTimer, Qt
         import os
         import cv2
 
@@ -1574,6 +1575,7 @@ class PipelineRunner:
 
         try:
             block_id = PipelineRunner._resolve_block_id(block_data)
+
             # ✅ SEND box_world TO SERVER（target）
             send_success, coord_string = PipelineRunner._send_latest_coordinates_from_folder(
                 recipe_name,
@@ -1585,6 +1587,7 @@ class PipelineRunner:
                 print(f"[SCREW TARGET] ✅ box_world sent to server: {coord_string}")
             else:
                 print("[SCREW TARGET] ❌ Failed to send box_world")
+
         except Exception as e:
             QMessageBox.warning(
                 parent_widget,
@@ -1598,8 +1601,140 @@ class PipelineRunner:
         ai_capture_done = {"done": False}
         other_predictions_for_orbbec = []
 
+        # =============================
+        # OK / NG OVERLAY
+        # =============================
+        blink_timer = QTimer(dialog)
+        blink_timer.setInterval(280)
+        blink_state = {"visible": True, "mode": "idle"}  # idle / ok / ng
+
+        status_overlay = QLabel(dialog)
+        status_overlay.setAlignment(Qt.AlignCenter)
+        status_overlay.setVisible(False)
+        status_overlay.raise_()
+        status_overlay.setText("")
+        status_overlay.setStyleSheet("""
+            QLabel {
+                background-color: rgba(0, 0, 0, 150);
+                border: 3px solid rgba(0, 255, 136, 220);
+                border-radius: 20px;
+                color: #00FF88;
+                font-size: 88px;
+                font-weight: 900;
+                font-family: Consolas;
+                letter-spacing: 8px;
+                padding: 22px 40px;
+            }
+        """)
+
+        def position_status_overlay():
+            panel_w = dialog.width()
+            panel_h = dialog.height()
+
+            overlay_w = min(520, max(320, int(panel_w * 0.42)))
+            overlay_h = 200
+
+            x = (panel_w - overlay_w) // 2
+            y = max(120, (panel_h - overlay_h) // 2 - 80)
+
+            status_overlay.setGeometry(x, y, overlay_w, overlay_h)
+            status_overlay.raise_()
+
+        _old_dialog_resize_event = dialog.resizeEvent
+
+        def _dialog_resize_event(event):
+            try:
+                position_status_overlay()
+            except Exception:
+                pass
+
+            if _old_dialog_resize_event:
+                try:
+                    _old_dialog_resize_event(event)
+                except Exception:
+                    pass
+
+        dialog.resizeEvent = _dialog_resize_event
+        QTimer.singleShot(0, position_status_overlay)
+
+        def _toggle_status():
+            if blink_state["mode"] == "ng":
+                blink_state["visible"] = not blink_state["visible"]
+                status_overlay.setVisible(blink_state["visible"])
+            elif blink_state["mode"] == "ok":
+                status_overlay.setVisible(True)
+            else:
+                status_overlay.setVisible(False)
+
+        blink_timer.timeout.connect(_toggle_status)
+
+        def show_ok_status():
+            blink_state["mode"] = "ok"
+            blink_state["visible"] = True
+            status_overlay.setText("OK")
+            status_overlay.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(0, 18, 10, 185);
+                    border: 3px solid rgba(0, 255, 136, 230);
+                    border-radius: 20px;
+                    color: #00FF88;
+                    font-size: 92px;
+                    font-weight: 900;
+                    font-family: Consolas;
+                    letter-spacing: 10px;
+                    padding: 22px 40px;
+                }
+            """)
+            position_status_overlay()
+            status_overlay.setVisible(True)
+            status_overlay.raise_()
+            if not blink_timer.isActive():
+                blink_timer.start()
+
+        def show_ng_status(name=""):
+            blink_state["mode"] = "ng"
+            blink_state["visible"] = True
+            status_overlay.setText("NG" if not name else f"NG\n{name}")
+            status_overlay.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(24, 0, 0, 190);
+                    border: 3px solid rgba(255, 51, 68, 230);
+                    border-radius: 20px;
+                    color: #FF3344;
+                    font-size: 72px;
+                    font-weight: 900;
+                    font-family: Consolas;
+                    letter-spacing: 6px;
+                    padding: 20px 34px;
+                }
+            """)
+
+            if name:
+                panel_w = dialog.width()
+                panel_h = dialog.height()
+                overlay_w = min(620, max(360, int(panel_w * 0.48)))
+                overlay_h = 240
+                x = (panel_w - overlay_w) // 2
+                y = max(120, (panel_h - overlay_h) // 2 - 80)
+                status_overlay.setGeometry(x, y, overlay_w, overlay_h)
+            else:
+                position_status_overlay()
+
+            status_overlay.setVisible(True)
+            status_overlay.raise_()
+            if not blink_timer.isActive():
+                blink_timer.start()
+
+        def clear_status():
+            blink_state["mode"] = "idle"
+            blink_state["visible"] = False
+            status_overlay.clear()
+            status_overlay.setVisible(False)
+            if blink_timer.isActive():
+                blink_timer.stop()
+
         # =========================================================
-        # TARGET = current block's box_orbbec.json
+        # TARGET = current block's box_world.json
         # OTHER  = all YOLO detections + other blocks' box_orbbec.json
         # =========================================================
         def _apply_screw_target_and_other_to_orbbec():
@@ -1609,9 +1744,8 @@ class PipelineRunner:
                 return [], None
 
             try:
-                # 1) TARGET = current block's box_world*.json
-                # -------------------------------------------------
-                target_points = PipelineRunner._load_latest_box_world_points(
+                # TARGET for Orbbec = box_orbbec (pixel)
+                target_points = PipelineRunner._load_latest_points_from_folder(
                     recipe_name,
                     "ScrewBoxesData",
                     block_id
@@ -1620,23 +1754,21 @@ class PipelineRunner:
                 target_bbox = PipelineRunner._points_to_bbox(target_points)
 
                 if target_bbox:
-                    print(f"[SCREW TARGET] Using box_world target bbox: {target_bbox}")
+                    print(f"[SCREW TARGET] Using box_orbbec target bbox: {target_bbox}")
                     try:
                         if hasattr(orbbec_thread, "set_external_target_bbox"):
                             orbbec_thread.set_external_target_bbox(target_bbox)
                     except Exception as e:
                         print(f"[SCREW TARGET] set_external_target_bbox error: {e}")
                 else:
-                    print("[SCREW TARGET] No box_world target found")
+                    print("[SCREW TARGET] No box_orbbec target found")
                     try:
                         if hasattr(orbbec_thread, "clear_external_target_bbox"):
                             orbbec_thread.clear_external_target_bbox()
                     except Exception as e:
                         print(f"[SCREW TARGET] clear_external_target_bbox error: {e}")
 
-                # -------------------------------------------------
-                # 2) OTHER = all YOLO + other blocks' box_orbbec
-                # -------------------------------------------------
+                # OTHER = all YOLO + other blocks' box_orbbec
                 all_boxes = []
                 for obj in other_predictions_for_orbbec:
                     try:
@@ -1678,9 +1810,7 @@ class PipelineRunner:
             other_predictions_for_orbbec = []
 
             try:
-                # -------------------------------------------------
                 # A) load other blocks' box_orbbec*.json as OTHER
-                # -------------------------------------------------
                 json_other_predictions = []
                 other_orbbec_boxes = PipelineRunner._load_all_orbbec_points_from_folder(
                     recipe_name,
@@ -1691,7 +1821,7 @@ class PipelineRunner:
                 for item in other_orbbec_boxes:
                     pred = PipelineRunner._points_to_other_prediction(
                         item,
-                        class_name=f"OTHER_OBJECT_{item.get('block_name', 'UNKNOWN')}"
+                        class_name=f"SCREW"
                     )
                     if pred:
                         pred["source"] = "json_orbbec"
@@ -1700,9 +1830,7 @@ class PipelineRunner:
                         json_other_predictions.append(pred)
                         print(f"[SCREW OTHER] JSON other {item.get('block_name')} -> {pred.get('bbox')}")
 
-                # -------------------------------------------------
                 # B) add ALL YOLO detections as OTHER
-                # -------------------------------------------------
                 yolo_other_predictions = []
 
                 if CAMERA_AVAILABLE:
@@ -1758,9 +1886,11 @@ class PipelineRunner:
                                 for i in range(len(boxes)):
                                     xyxy = boxes.xyxy[i].cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy[i]
                                     class_id_val = int(
-                                        boxes.cls[i].cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls[i])
+                                        boxes.cls[i].cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls[i]
+                                    )
                                     conf_val = float(
-                                        boxes.conf[i].cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf[i])
+                                        boxes.conf[i].cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf[i]
+                                    )
                                     class_name = detections.names.get(class_id_val, f"class_{class_id_val}")
 
                                     yolo_other_predictions.append({
@@ -1793,11 +1923,6 @@ class PipelineRunner:
             except Exception as e:
                 print(f"[SCREW OTHER] ❌ AutoCaptureFlow failed: {e}")
                 _apply_screw_target_and_other_to_orbbec()
-
-        # First apply target immediately
-        _apply_screw_target_and_other_to_orbbec()
-        # Then build OTHER objects
-        _run_screw_other_object_predict_once()
 
         # ── TECH HEADER BAR ──────────────────────────────────────────────
         hdr_bar = QWidget()
@@ -1933,6 +2058,25 @@ class PipelineRunner:
 
         layout.addStretch(1)
 
+        # ✅ 先 connect signal，再 apply / predict，避免錯過 OK
+        try:
+            orbbec_thread.ok_status_signal.connect(show_ok_status)
+        except Exception:
+            pass
+        try:
+            orbbec_thread.ng_status_signal.connect(show_ng_status)
+        except Exception:
+            pass
+        try:
+            orbbec_thread.idle_status_signal.connect(clear_status)
+        except Exception as e:
+            print(f"[SCREW UI] Signal connect error: {e}")
+
+        # First apply target immediately
+        _apply_screw_target_and_other_to_orbbec()
+        # Then build OTHER objects
+        _run_screw_other_object_predict_once()
+
         # ── Button footer ─────────────────────────────────────────────────
         btn_footer = QWidget()
         btn_footer.setFixedHeight(100)
@@ -2035,6 +2179,32 @@ class PipelineRunner:
             try:
                 if hasattr(orbbec_thread, "clear_all_detection_boxes"):
                     orbbec_thread.clear_all_detection_boxes()
+            except Exception:
+                pass
+
+            try:
+                clear_status()
+            except Exception:
+                pass
+
+            try:
+                if blink_timer.isActive():
+                    blink_timer.stop()
+            except Exception:
+                pass
+
+            try:
+                orbbec_thread.ok_status_signal.disconnect(show_ok_status)
+            except Exception:
+                pass
+
+            try:
+                orbbec_thread.ng_status_signal.disconnect(show_ng_status)
+            except Exception:
+                pass
+
+            try:
+                orbbec_thread.idle_status_signal.disconnect(clear_status)
             except Exception:
                 pass
 
@@ -2264,6 +2434,106 @@ class PipelineRunner:
         # Orbbec manager / shared thread
         manager = OrbbecManager.get_instance()
         orbbec_thread = manager.get_thread(recipe_name)
+        orbbec_thread = manager.thread if manager.thread else PipelineRunner.get_orbbec_thread()
+
+        # ===== OK / NG overlay shared state =====
+        status_overlay = None
+        blink_timer = None
+        blink_state = {"visible": True, "mode": "idle"}
+
+        def _toggle_status_blink():
+            nonlocal status_overlay
+            if status_overlay is None:
+                return
+
+            if blink_state["mode"] in ("ok", "ng"):
+                blink_state["visible"] = not blink_state["visible"]
+                status_overlay.setVisible(blink_state["visible"])
+                if blink_state["visible"]:
+                    status_overlay.raise_()
+            else:
+                status_overlay.setVisible(False)
+
+        def show_ok_status():
+            nonlocal status_overlay, blink_timer
+            if status_overlay is None:
+                return
+
+            blink_state["mode"] = "ok"
+            blink_state["visible"] = True
+            status_overlay.setText("OK")
+            status_overlay.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(0, 18, 10, 185);
+                    border: 3px solid rgba(0, 255, 136, 220);
+                    border-radius: 18px;
+                    color: #00FF88;
+                    font-size: 88px;
+                    font-weight: 900;
+                    font-family: Consolas;
+                    letter-spacing: 8px;
+                    padding: 20px 36px;
+                }
+            """)
+            position_status_overlay()
+            status_overlay.setVisible(True)
+            status_overlay.raise_()
+
+            if blink_timer is not None and not blink_timer.isActive():
+                blink_timer.start()
+
+        def show_ng_status(name=""):
+            nonlocal status_overlay, blink_timer
+            if status_overlay is None:
+                return
+
+            blink_state["mode"] = "ng"
+            blink_state["visible"] = True
+
+            ng_text = "NG" if not name else f"NG\n{name}"
+            status_overlay.setText(ng_text)
+
+            status_overlay.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(24, 0, 0, 190);
+                    border: 3px solid rgba(255, 51, 68, 230);
+                    border-radius: 18px;
+                    color: #FF3344;
+                    font-size: 74px;
+                    font-weight: 900;
+                    font-family: Consolas;
+                    letter-spacing: 6px;
+                    padding: 18px 30px;
+                }
+            """)
+
+            if "\n" in ng_text:
+                panel_w = left_widget.width()
+                overlay_w = min(460, max(280, int(panel_w * 0.62)))
+                overlay_h = 220
+                x = (left_widget.width() - overlay_w) // 2
+                y = (left_widget.height() - overlay_h) // 2 - 350
+                status_overlay.setGeometry(x, y, overlay_w, overlay_h)
+            else:
+                position_status_overlay()
+
+            status_overlay.setVisible(True)
+            status_overlay.raise_()
+
+            if blink_timer is not None and not blink_timer.isActive():
+                blink_timer.start()
+
+        def clear_status_overlay():
+            nonlocal status_overlay, blink_timer
+            blink_state["mode"] = "idle"
+            blink_state["visible"] = False
+
+            if status_overlay is not None:
+                status_overlay.clear()
+                status_overlay.setVisible(False)
+
+            if blink_timer is not None and blink_timer.isActive():
+                blink_timer.stop()
 
         # Find YOLO model
         model_path = None
@@ -2379,6 +2649,72 @@ class PipelineRunner:
             ref_image_label.setStyleSheet(
                 "color: #FFAA00; font-size: 18px; font-family: Consolas; background-color: #0A0800; border: 1px solid #553300; border-left: 3px solid #FFAA00; padding: 20px;")
         left_layout.addWidget(ref_image_label, stretch=1)
+
+        # ===== INDUSTRIAL OK / NG OVERLAY =====
+        left_widget.setObjectName("assemblyLeftPanel")
+        left_widget.setStyleSheet("""
+            QWidget#assemblyLeftPanel {
+                background-color: #060C14;
+            }
+        """)
+
+        status_overlay = QLabel(left_widget)
+        status_overlay.setAlignment(Qt.AlignCenter)
+        status_overlay.setVisible(False)
+        status_overlay.setText("")
+        status_overlay.raise_()
+
+        status_overlay.setStyleSheet("""
+            QLabel {
+                background-color: rgba(0, 0, 0, 150);
+                border: 2px solid rgba(0, 255, 136, 180);
+                border-radius: 18px;
+                color: #00FF88;
+                font-size: 88px;
+                font-weight: 900;
+                font-family: Consolas;
+                letter-spacing: 6px;
+                padding: 20px 36px;
+            }
+        """)
+
+        def position_status_overlay():
+            if status_overlay is None or left_widget is None:
+                return
+
+            panel_w = left_widget.width()
+            panel_h = left_widget.height()
+
+            overlay_w = min(420, max(260, int(panel_w * 0.55)))
+            overlay_h = 180
+
+            x = (panel_w - overlay_w) // 2
+            y = (panel_h - overlay_h) // 2 -350
+
+            status_overlay.setGeometry(x, y, overlay_w, overlay_h)
+            status_overlay.raise_()
+
+        blink_timer = QTimer(dialog)
+        blink_timer.setInterval(280)
+        blink_timer.timeout.connect(_toggle_status_blink)
+
+        # 跟著左 panel resize 時重排 overlay
+        _old_left_resize_event = left_widget.resizeEvent
+
+        def _left_widget_resize_event(event):
+            try:
+                position_status_overlay()
+            except Exception:
+                pass
+
+            if _old_left_resize_event:
+                try:
+                    _old_left_resize_event(event)
+                except Exception:
+                    pass
+
+        left_widget.resizeEvent = _left_widget_resize_event
+        QTimer.singleShot(0, position_status_overlay)
 
         # RIGHT: Detection
         right_widget = QWidget()
@@ -2629,7 +2965,6 @@ class PipelineRunner:
                 if pixmap.isNull():
                     return
 
-                # ✅ 直接用 Orbbec 原始 size（最顺）
                 scaled = pixmap.scaled(
                     1280, 720,
                     Qt.KeepAspectRatio,
@@ -2655,6 +2990,26 @@ class PipelineRunner:
             try:
                 orbbec_thread = manager.get_thread(recipe_name)
                 manager.attach_live_view(update_orbbec_view)
+
+                try:
+                    orbbec_thread.ok_status_signal.disconnect(show_ok_status)
+                except Exception:
+                    pass
+                try:
+                    orbbec_thread.ng_status_signal.disconnect(show_ng_status)
+                except Exception:
+                    pass
+                try:
+                    orbbec_thread.idle_status_signal.disconnect(clear_status_overlay)
+                except Exception:
+                    pass
+
+                try:
+                    orbbec_thread.ok_status_signal.connect(show_ok_status)
+                    orbbec_thread.ng_status_signal.connect(show_ng_status)
+                    orbbec_thread.idle_status_signal.connect(clear_status_overlay)
+                except Exception as e:
+                    print(f"[ASSEMBLY UI] Signal connect error: {e}")
 
                 if (
                         orbbec_thread is not None
@@ -2695,6 +3050,29 @@ class PipelineRunner:
 
             try:
                 PipelineRunner.set_orbbec_trigger(orbbec_thread, None, state="idle")
+            except Exception:
+                pass
+
+            try:
+                if orbbec_thread is not None:
+                    orbbec_thread.ok_status_signal.disconnect(show_ok_status)
+            except Exception:
+                pass
+
+            try:
+                if orbbec_thread is not None:
+                    orbbec_thread.ng_status_signal.disconnect(show_ng_status)
+            except Exception:
+                pass
+
+            try:
+                if orbbec_thread is not None:
+                    orbbec_thread.idle_status_signal.disconnect(clear_status_overlay)
+            except Exception:
+                pass
+
+            try:
+                clear_status_overlay()
             except Exception:
                 pass
 
@@ -2871,12 +3249,8 @@ class PipelineRunner:
                     recipe_name_local = recipe_name
                     block_id_local = str(block_id)
 
-                    # ✅ only exclude current block if this is a screw step
+                    # assembly step -> not screw step
                     is_screw_step = False
-                    try:
-                        is_screw_step = str(block_type).lower() == "screw"
-                    except Exception:
-                        pass
 
                     all_screw_others = PipelineRunner._load_all_points_from_folder(
                         recipe_name_local,
@@ -2887,7 +3261,7 @@ class PipelineRunner:
                     for item in all_screw_others:
                         pred = PipelineRunner._points_to_other_prediction(
                             item,
-                            class_name=f"OTHER_OBJECT_{item.get('block_name', 'UNKNOWN')}"
+                            class_name=f"SCREW"
                         )
                         if pred:
                             pred["source"] = "json"
@@ -2935,10 +3309,7 @@ class PipelineRunner:
                 try:
                     best_bbox = best_target.get('bbox', None) if best_target else None
 
-                    # TARGET BOX -> use dedicated target channel
                     if best_bbox and hasattr(orbbec_thread, "set_external_target_bbox"):
-                        # IMPORTANT:
-                        # set_external_target_bbox() in Orbbec thread already does homography mapping
                         orbbec_thread.set_external_target_bbox(best_bbox)
                         print(f"[TARGET] {product_name} at {best_bbox}")
                         print("[TARGET] SENT to Orbbec")
@@ -2947,7 +3318,6 @@ class PipelineRunner:
                             orbbec_thread.clear_external_target_bbox()
                             print("[TARGET] Cleared")
 
-                    # OTHER BOXES -> use all_detection_boxes channel
                     all_boxes = []
                     for obj in other_predictions:
                         try:
@@ -3109,8 +3479,10 @@ class PipelineRunner:
 
                 disable_mainpage_start_trigger()
                 PipelineRunner.set_orbbec_trigger(orbbec_thread, on_retry_hand_trigger, state="idle")
+
                 import traceback
                 traceback.print_exc()
+
 
         def on_retry_detection():
             nonlocal manual_retry_count, target_detected_successfully, auto_retry_count
@@ -3145,6 +3517,7 @@ class PipelineRunner:
             detection_label.clear()
             start_detection_capture(f"↺ Manual retry. ({manual_retry_count})")
 
+
         def on_retry_hand_trigger():
             try:
                 if not retry_btn.isEnabled():
@@ -3158,8 +3531,8 @@ class PipelineRunner:
             except Exception as e:
                 print(f"[RETRY] Trigger error: {e}")
 
-        def on_verify():
 
+        def on_verify():
             print("🔍 [DEBUG] on_verify START")
 
             nonlocal captured_image_path, detection_results, output_path, target_detected_successfully, orbbec_thread
@@ -3217,6 +3590,29 @@ class PipelineRunner:
             except Exception:
                 pass
 
+            try:
+                if orbbec_thread is not None:
+                    orbbec_thread.ok_status_signal.disconnect(show_ok_status)
+            except Exception:
+                pass
+
+            try:
+                if orbbec_thread is not None:
+                    orbbec_thread.ng_status_signal.disconnect(show_ng_status)
+            except Exception:
+                pass
+
+            try:
+                if orbbec_thread is not None:
+                    orbbec_thread.idle_status_signal.disconnect(clear_status_overlay)
+            except Exception:
+                pass
+
+            try:
+                clear_status_overlay()
+            except Exception:
+                pass
+
             verify_btn.setEnabled(False)
             retry_btn.setEnabled(False)
 
@@ -3257,20 +3653,12 @@ class PipelineRunner:
 
                 step_badge = QLabel(f"ASSEMBLY RESULT")
                 step_badge.setStyleSheet("""
-                    font-size: 20px; font-weight: 800; color: #FFFFFF;
-                    letter-spacing: 2px; font-family: Consolas; background: transparent;
-                """)
-
-                # hand_detection_status = QLabel("✋ HAND DETECTION: WAITING")
-                # hand_detection_status.setStyleSheet("""
-                #     font-size: 11px; font-weight: 900; color: #FFAA00;
-                #     background-color: #1A1000; border: 1px solid #FFAA0044;
-                #     padding: 4px 12px; letter-spacing: 1px; font-family: Consolas;
-                # """)
+                            font-size: 20px; font-weight: 800; color: #FFFFFF;
+                            letter-spacing: 2px; font-family: Consolas; background: transparent;
+                        """)
 
                 saved_header_layout.addWidget(step_badge)
                 saved_header_layout.addStretch()
-                # saved_header_layout.addWidget(hand_detection_status)
                 saved_layout.addWidget(saved_header_widget)
 
                 has_video = uploaded_video_path and os.path.exists(uploaded_video_path)
@@ -3396,26 +3784,17 @@ class PipelineRunner:
                 close_btn = QPushButton("▶  CONTINUE")
                 close_btn.setFixedHeight(66)
                 close_btn.setStyleSheet("""
-                    QPushButton {
-                        font-size: 20px; font-weight: 800;
-                        background-color: #031A10; color: #00FF88;
-                        border: 1px solid #0A5030; border-bottom: 5px solid #051008;
-                        border-left: 3px solid #00FF88; border-radius: 2px;
-                        min-width: 320px; font-family: Consolas; letter-spacing: 2px;
-                    }
-                    QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
-                    QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
-                """)
+                            QPushButton {
+                                font-size: 20px; font-weight: 800;
+                                background-color: #031A10; color: #00FF88;
+                                border: 1px solid #0A5030; border-bottom: 5px solid #051008;
+                                border-left: 3px solid #00FF88; border-radius: 2px;
+                                min-width: 320px; font-family: Consolas; letter-spacing: 2px;
+                            }
+                            QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
+                            QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
+                        """)
 
-                # hand_instruction = QLabel("✋ PLACE HAND IN BOTTOM-RIGHT CORNER TO CONTINUE")
-                # hand_instruction.setStyleSheet("""
-                #     font-size: 14px; color: #FFAA00; font-weight: 800;
-                #     font-family: Consolas; letter-spacing: 1px;
-                #     background-color: #1A1000; border: 1px solid #FFAA0044;
-                #     padding: 8px 20px; border-radius: 2px;
-                # """)
-
-                # btn_layout.addWidget(hand_instruction)
                 btn_layout.addStretch()
                 btn_layout.addWidget(close_btn)
                 saved_layout.addWidget(btn_container)
@@ -3479,9 +3858,11 @@ class PipelineRunner:
 
             print("🔍 [DEBUG] on_verify END")
 
+
         start_detection_capture()
         retry_btn.clicked.connect(on_retry_detection)
         verify_btn.clicked.connect(on_verify)
+
 
         def _cleanup_dialog(*_):
             try:
@@ -3499,7 +3880,37 @@ class PipelineRunner:
             except Exception:
                 pass
 
+            try:
+                if blink_timer is not None and blink_timer.isActive():
+                    blink_timer.stop()
+            except Exception:
+                pass
+
+            try:
+                clear_status_overlay()
+            except Exception:
+                pass
+
+            try:
+                if orbbec_thread:
+                    orbbec_thread.ok_status_signal.disconnect(show_ok_status)
+            except Exception:
+                pass
+
+            try:
+                if orbbec_thread:
+                    orbbec_thread.ng_status_signal.disconnect(show_ng_status)
+            except Exception:
+                pass
+
+            try:
+                if orbbec_thread:
+                    orbbec_thread.idle_status_signal.disconnect(clear_status_overlay)
+            except Exception:
+                pass
+
             restore_mainpage_start_trigger()
+
 
         dialog.finished.connect(_cleanup_dialog)
 

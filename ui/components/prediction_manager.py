@@ -84,7 +84,7 @@ class PredictionManager:
             print(f"DEBUG: Predict - Class filter: {classes_param}")
 
             # Run prediction
-            results = self.current_model.predict(
+            results = self.current_model(
                 source=image_path,
                 conf=conf_threshold,
                 iou=0.45,

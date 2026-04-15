@@ -2320,7 +2320,16 @@ class DeepLearningPage(QWidget):
             else:
                 self.prediction_signals.progress.emit(30, f"Detecting all classes on {device}...")
 
-            results = self.current_model.predict(
+            classes_param = None
+            if class_filter is not None:
+                if isinstance(class_filter, str):
+                    class_id = self.get_class_id_by_name(class_filter)
+                    if class_id is not None:
+                        classes_param = [class_id]
+                else:
+                    classes_param = [int(class_filter)]
+
+            results = self.current_model(
                 source=image_path,
                 conf=0.5,
                 iou=0.45,
@@ -2330,7 +2339,7 @@ class DeepLearningPage(QWidget):
                 save_conf=True,
                 show=False,
                 verbose=False,
-                classes=[class_filter] if class_filter is not None else None
+                classes=classes_param
             )
 
             self.prediction_signals.progress.emit(70, "Processing results...")

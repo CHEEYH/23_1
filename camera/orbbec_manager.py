@@ -10,6 +10,7 @@ class OrbbecManager:
         self.current_handler = None
         self.current_live_slot = None
 
+
     @classmethod
     def get_instance(cls):
         if cls._instance is None:
