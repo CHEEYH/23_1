@@ -999,7 +999,7 @@ class MainPage(QWidget):
             self.qr_check_passed = False;
             self.qr_result_ok = False
 
-        if hasattr(self, 'run_button'): self.run_button.setEnabled(True)
+        self.set_pipeline_idle_ui()
         if hasattr(self, 'sys_dot'): self.sys_dot.setStyleSheet(
             "color: #00DD66; font-size: 24px; background: transparent;")
         self.update_pipeline_info();
@@ -1263,6 +1263,7 @@ class MainPage(QWidget):
 
         if self.pipeline_running or self.pipeline_precheck_running:
             print("[MainPage] Pipeline already running, ignoring confirm")
+            self.set_pipeline_running_ui()
             return
 
         if self.qr_dialog:
@@ -1282,6 +1283,9 @@ class MainPage(QWidget):
 
         self.waiting_for_qr_confirm = False
         self.waiting_for_hand_confirm = False
+
+        # Hand-start path: lock button before precheck starts
+        self.set_pipeline_running_ui()
 
         print("[MainPage] 🚀 Starting pipeline via hand gesture confirmation.")
         QTimer.singleShot(0, self.start_pipeline_precheck)
@@ -1761,8 +1765,7 @@ class MainPage(QWidget):
             self.orbbec_thread.set_trigger_state("idle")
 
         # Re-enable run button
-        if hasattr(self, 'run_button'):
-            self.run_button.setEnabled(True)
+        self.set_pipeline_idle_ui()
 
     def show_status_message(self, message, level="info"):
         """Show status message in UI"""
@@ -1893,6 +1896,7 @@ class MainPage(QWidget):
             return
 
         if self.pipeline_running or self.pipeline_precheck_running:
+            self.set_pipeline_running_ui()
             return
 
         if not self.qr_check_passed:
@@ -1900,6 +1904,8 @@ class MainPage(QWidget):
             self.show_qr_check_popup()
             return
 
+        # Button-start path: immediately lock UI before precheck starts
+        self.set_pipeline_running_ui()
         self.start_pipeline_precheck()
 
     def _find_deep_learning_page(self):
@@ -1932,10 +1938,13 @@ class MainPage(QWidget):
 
     def run_pipeline_after_precheck(self):
         if self.pipeline_running:
+            self.set_pipeline_running_ui()
             return
 
         self.machine_status.setText("RUNNING…")
         self.pipeline_running = True
+        self.set_pipeline_running_ui()
+
         try:
             success = PipelineRunner.run_pipeline_operator_mode(
                 self.current_recipe,
@@ -1944,25 +1953,31 @@ class MainPage(QWidget):
             )
         finally:
             self.pipeline_running = False
+            self.pipeline_precheck_running = False
+            self.set_pipeline_idle_ui()
 
         self._post_run(success)
 
     def start_pipeline_precheck(self):
         if self.pipeline_precheck_running:
+            self.set_pipeline_running_ui()
             return
 
         try:
             from ui.pages.deep_learning_page import CameraWorker, CAMERA_AVAILABLE
         except Exception as e:
+            self.set_pipeline_idle_ui()
             QMessageBox.warning(self, "AI Check Error", f"Cannot import DeepLearningPage camera tools:\n{str(e)}")
             return
 
         if not CAMERA_AVAILABLE:
+            self.set_pipeline_idle_ui()
             QMessageBox.warning(self, "Camera Error", "Camera not available.")
             return
 
         dl_page = self._find_deep_learning_page()
         if dl_page is None:
+            self.set_pipeline_idle_ui()
             QMessageBox.warning(
                 self,
                 "AI Check Error",
@@ -1974,6 +1989,7 @@ class MainPage(QWidget):
         try:
             dl_page.update_paths_from_recipe()
         except Exception as e:
+            self.set_pipeline_idle_ui()
             QMessageBox.warning(self, "AI Check Error", f"Failed to update AI paths:\n{str(e)}")
             return
 
@@ -1981,19 +1997,23 @@ class MainPage(QWidget):
             if not hasattr(dl_page, "current_model") or dl_page.current_model is None:
                 loaded = dl_page.auto_load_latest_model()
                 if not loaded:
+                    self.set_pipeline_idle_ui()
                     QMessageBox.warning(self, "AI Check Error", "No AI model found for current recipe.")
                     return
         except Exception as e:
+            self.set_pipeline_idle_ui()
             QMessageBox.warning(self, "AI Check Error", f"Failed to load model:\n{str(e)}")
             return
 
         if not getattr(dl_page, "capture_folder", None):
+            self.set_pipeline_idle_ui()
             QMessageBox.warning(self, "AI Check Error", "Capture folder is not ready.")
             return
 
         self.pipeline_precheck_running = True
         self.pending_run_after_precheck = True
         self._precheck_dl_page = dl_page
+        self.set_pipeline_running_ui()
 
         if self.current_recipe and self.current_job_title:
             self.machine_status.setText(f"AI CHECK  ·  {self.current_recipe}  ·  Capturing image")
@@ -2535,3 +2555,36 @@ class MainPage(QWidget):
             self.qr_worker.wait(500)
             self.qr_worker.deleteLater();
             self.qr_worker = None
+
+    def set_pipeline_running_ui(self):
+        """Disable start button and show RUNNING state."""
+        if hasattr(self, "run_button") and self.run_button:
+            self.run_button.setEnabled(False)
+            self.run_button.setText("●  RUNNING...")
+            self.run_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #031410;
+                    color: #00FF88;
+                    border: 1px solid #0A5030;
+                    border-bottom: 5px solid #051008;
+                    border-left: 3px solid #00FF88;
+                    border-radius: 2px;
+                    font-size: 30px;
+                    font-weight: 800;
+                    letter-spacing: 1px;
+                }
+                QPushButton:disabled {
+                    background-color: #031410;
+                    color: #00FF88;
+                    border: 1px solid #0A5030;
+                    border-bottom: 5px solid #051008;
+                    border-left: 3px solid #00FF88;
+                }
+            """)
+
+    def set_pipeline_idle_ui(self):
+        """Restore normal START PIPELINE button."""
+        if hasattr(self, "run_button") and self.run_button:
+            self.run_button.setEnabled(True)
+            self.run_button.setText("▶  START PIPELINE")
+            self.run_button.setStyleSheet(self._btn_primary())

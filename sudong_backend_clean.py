@@ -1,3 +1,33 @@
+
+"""
+Sudong V4 - Screwdriver Monitor & Controller
+
+Purpose:
+This program controls and monitors an automated screwdriver system.
+It communicates with:
+1. A Sudong screwdriver controller
+2. A bit selector device
+3. A local client application through a TCP command server
+
+Main functions:
+- Connect to the screwdriver and receive live tightening data
+- Connect to the bit selector and verify the correct bit is picked
+- Load screw recipes from JSON files
+- Calculate preset parameters based on screw size, length, and torque
+- Write tightening presets to the screwdriver without interrupting live monitoring
+- Start and stop screw recording sessions
+- Detect tightening result (OK / NG) from live packets
+- Save torque and speed graphs for each screw
+- Export collected screw results to CSV files
+- Show a compact Tkinter corner UI with device status and result display
+- Send standardized status/result messages back to an external client
+
+In short:
+This script is the main backend + UI controller for a screwdriver station.
+It manages recipe loading, bit validation, live monitoring, result logging,
+preset writing, and communication between the hardware and external software.
+"""
+
 import os
 import re
 import csv
@@ -43,6 +73,7 @@ OUTPUT_FOLDER = (
 ENABLE_STREAM_COMMAND = b"\x01\x00"
 ENABLE_STREAM_DATA    = b"\x01\x00"
 STOP_COMMAND          = b"\x05\x00"
+# STOP_DATA             = b"\x00"
 
 DEFAULT_GROUP_NO    = 1
 DEFAULT_TORQUE_UNIT = 0
@@ -150,6 +181,11 @@ selector_expected_error           = False
 selector_stop_wait_active         = False
 selector_stop_wait_message        = ""
 selector_buzzer_active            = False
+
+# selector change confirmation state
+selector_last_stable_bits    = None
+selector_pending_bits        = None
+selector_pending_same_count  = 0
 
 corner_monitor = None
 
@@ -276,6 +312,33 @@ def sync_selector_buzzer(force: bool = False):
 
     return should_buzz
 
+
+
+def send_selector_read_request():
+    """
+    Send one selector read request immediately.
+    Used for connect/reconnect and confirm-read after bit change detected.
+    """
+    global selector_worker
+
+    worker = selector_worker
+    if worker is None or not worker.is_alive():
+        log_error("[SELECTOR] worker not running for read request")
+        return False
+
+    client = getattr(worker, "client", None)
+    if client is None or client.sock is None:
+        log_error("[SELECTOR] client not connected for read request")
+        return False
+
+    try:
+        with selector_lock:
+            client.send_frame(cmd_read_selector_status())
+        log_debug("[SELECTOR] Sent read-status request")
+        return True
+    except Exception as e:
+        log_error(f"[SELECTOR] read request send failed: {e}")
+        return False
 
 
 def send_selector_read_on_connect():
@@ -1143,18 +1206,94 @@ def reset_current_cycle():
 
 def handle_selector_status(status: BitSelectorStatus):
     global latest_selector_status, latest_selector_bits
+
     with selector_condition:
         latest_selector_status = status
-        latest_selector_bits   = [status.bit_1, status.bit_2, status.bit_3,
-                                   status.bit_4, status.bit_5, status.bit_6]
-        expected_bit, _ = get_selector_guidance()
-        if expected_bit and 1 <= expected_bit <= 6:
-            active_wrong_bits = [i + 1 for i, v in enumerate(latest_selector_bits)
-                                  if v == 1 and (i + 1) != expected_bit]
-            set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
+        latest_selector_bits = [
+            status.bit_1, status.bit_2, status.bit_3,
+            status.bit_4, status.bit_5, status.bit_6
+        ]
         selector_condition.notify_all()
-    sync_selector_buzzer()
+
+    # First update recording/error state
     check_selector_held_during_recording()
+
+    # Then refresh wrong-bit guidance using latest final state
+    with selector_lock:
+        expected_bit = current_expected_selector_bit
+
+    if expected_bit and 1 <= expected_bit <= 6:
+        active_wrong_bits = [
+            i + 1 for i, v in enumerate(latest_selector_bits)
+            if v == 1 and (i + 1) != expected_bit
+        ]
+        with selector_lock:
+            current_wrong_selector_bits = set(active_wrong_bits)
+
+    # Only sync buzzer once, after all states are final
+    sync_selector_buzzer()
+
+
+def process_selector_status_confirmed(status: BitSelectorStatus):
+    """
+    Accept selector bit change only after:
+    1) a change is detected
+    2) one more read is sent
+    3) the same changed bits are received again
+
+    Buzzer/state/UI update only happen after confirmation.
+    """
+    global selector_last_stable_bits, selector_pending_bits, selector_pending_same_count
+
+    bits = tuple(status.bits)
+
+    with selector_lock:
+        stable_bits = selector_last_stable_bits
+        pending_bits = selector_pending_bits
+
+    # first valid selector frame
+    if stable_bits is None:
+        with selector_lock:
+            selector_last_stable_bits = bits
+            selector_pending_bits = None
+            selector_pending_same_count = 0
+        handle_selector_status(status)
+        return True
+
+    # no change from stable state
+    if bits == stable_bits:
+        with selector_lock:
+            selector_pending_bits = None
+            selector_pending_same_count = 0
+        handle_selector_status(status)
+        return True
+
+    # changed state detected first time
+    if pending_bits != bits:
+        with selector_lock:
+            selector_pending_bits = bits
+            selector_pending_same_count = 1
+
+        log_debug(f"[SELECTOR] Change detected, confirm read required: {bits}")
+        send_selector_read_request()
+        return False
+
+    # same changed state received again
+    with selector_lock:
+        selector_pending_same_count += 1
+        same_count = selector_pending_same_count
+
+    if same_count >= 2:
+        with selector_lock:
+            selector_last_stable_bits = bits
+            selector_pending_bits = None
+            selector_pending_same_count = 0
+
+        log_debug(f"[SELECTOR] Change confirmed: {bits}")
+        handle_selector_status(status)
+        return True
+
+    return False
 
 def get_latest_selector_status():
     with selector_lock: return latest_selector_status
@@ -1294,39 +1433,48 @@ def send_initial_connection_status_to_client():
 def check_selector_held_during_recording():
     global selector_has_been_correct, selector_missing_during_recording
     global selector_missing_error_sent, selector_expected_error
+    global current_expected_selector_bit, current_wrong_selector_bits
+
     with data_lock:
         is_rec = recording
         expected_bit = int(current_selector_bit) if current_selector_bit else None
+
     if not is_rec or not expected_bit:
         return
+
     bits = get_latest_selector_bits()
     if not bits or None in bits:
         return
-    expected_on  = (bits[expected_bit - 1] == 1)
-    if expected_on:
-        selector_has_been_correct = True
-        if selector_missing_during_recording:
-            selector_missing_during_recording = False
-            selector_missing_error_sent       = False
-            selector_expected_error           = False
-            active_wrong_bits = [i + 1 for i, v in enumerate(bits) if v == 1 and (i + 1) != expected_bit]
-            set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
-            sync_selector_buzzer(force=True)
-            log_debug(f"[SELECTOR] Correct bit restored: {expected_bit}")
-            try: send_result_to_client_text("INFO,SELECTOR_OK")
-            except Exception: pass
-    else:
-        if selector_has_been_correct:
-            selector_missing_during_recording = True
-            selector_expected_error           = True
-            active_wrong_bits = [i + 1 for i, v in enumerate(bits) if v == 1 and (i + 1) != expected_bit]
-            set_selector_guidance(expected_bit=expected_bit, wrong_bits=active_wrong_bits)
-            if not selector_missing_error_sent:
-                selector_missing_error_sent = True
-                sync_selector_buzzer(force=True)
-                log_error(f"[ERROR] Selector removed during run, expected bit {expected_bit}")
-                try: send_result_to_client_text("ERROR,SELECTOR_REMOVED")
-                except Exception: pass
+
+    expected_on = (bits[expected_bit - 1] == 1)
+    active_wrong_bits = [i + 1 for i, v in enumerate(bits) if v == 1 and (i + 1) != expected_bit]
+
+    with selector_lock:
+        current_expected_selector_bit = expected_bit
+        current_wrong_selector_bits = set(active_wrong_bits)
+
+        if expected_on:
+            selector_has_been_correct = True
+            if selector_missing_during_recording:
+                selector_missing_during_recording = False
+                selector_missing_error_sent = False
+                selector_expected_error = False
+                log_debug(f"[SELECTOR] Correct bit restored: {expected_bit}")
+                try:
+                    send_result_to_client_text("INFO,SELECTOR_OK")
+                except Exception:
+                    pass
+        else:
+            if selector_has_been_correct:
+                selector_missing_during_recording = True
+                selector_expected_error = True
+                if not selector_missing_error_sent:
+                    selector_missing_error_sent = True
+                    log_error(f"[ERROR] Selector removed during run, expected bit {expected_bit}")
+                    try:
+                        send_result_to_client_text("ERROR,SELECTOR_REMOVED")
+                    except Exception:
+                        pass
 
 def finalize_one_screw(pkt):
     global screw_counter
@@ -1681,22 +1829,28 @@ class LiveStreamWorker(threading.Thread):
 
 
 class BitSelectorWorker(threading.Thread):
-    def __init__(self, reconnect_delay=1.0, poll_delay=0.05):
+    def __init__(self, reconnect_delay=1.0, poll_delay=0.1):
         super().__init__(daemon=True)
-        self.running = True; self.client = None
+        self.running = True
+        self.client = None
         self.last_bits = None
         self.reconnect_delay = reconnect_delay
-        self.poll_delay      = poll_delay
+        self.poll_delay = poll_delay
 
     def stop(self):
         self.running = False
-        client = self.client; self.client = None
+        client = self.client
+        self.client = None
         if client:
-            try: client.close()
-            except Exception: pass
+            try:
+                client.close()
+            except Exception:
+                pass
         set_selector_connection_status(False, "worker stopped")
 
     def run(self):
+        global selector_last_stable_bits, selector_pending_bits, selector_pending_same_count
+
         while self.running:
             try:
                 set_selector_connection_status(False, f"connecting to {BIT_SELECTOR_HOST}:{BIT_SELECTOR_PORT}")
@@ -1704,7 +1858,14 @@ class BitSelectorWorker(threading.Thread):
                 self.client.connect()
                 log_debug("[SELECTOR] Worker connected")
 
+                with selector_lock:
+                    selector_last_stable_bits = None
+                    selector_pending_bits = None
+                    selector_pending_same_count = 0
+                    self.last_bits = None
+
                 # send read status once after connect / reconnect
+                log_debug(f"[SELECTOR] Poll read interval = {self.poll_delay:.1f}s")
                 with selector_lock:
                     self.client.send_frame(READ_SELECTOR_STATUS_ON_CONNECT_FRAME)
                 log_debug("[SELECTOR] Sent read-status-on-connect frame")
@@ -1713,16 +1874,26 @@ class BitSelectorWorker(threading.Thread):
                     try:
                         with selector_lock:
                             self.client.send_frame(cmd_read_selector_status())
+
                         for frame in self.client.recv_frames():
-                            if not verify_frame(frame): continue
+                            if not verify_frame(frame):
+                                continue
+
                             if (frame[3], frame[4]) in ((0x03, 0x12), (0x02, 0x10)):
                                 status = parse_selector_status(frame)
-                                handle_selector_status(status)
-                                if status.bits != self.last_bits:
-                                    if DEBUG_SELECTOR: log_debug(f"[SELECTOR] bits={status.bits}")
-                                    self.last_bits = status.bits
+                                applied = process_selector_status_confirmed(status)
+
+                                if applied:
+                                    current_bits = tuple(status.bits)
+                                    if current_bits != self.last_bits:
+                                        if DEBUG_SELECTOR:
+                                            log_debug(f"[SELECTOR] bits confirmed={current_bits}")
+                                        self.last_bits = current_bits
+
                         time.sleep(self.poll_delay)
-                    except socket.timeout: continue
+
+                    except socket.timeout:
+                        continue
                     except ConnectionError as e:
                         if self.running:
                             log_debug(f"[SELECTOR] Connection lost: {e}")
@@ -1738,10 +1909,13 @@ class BitSelectorWorker(threading.Thread):
                     log_debug(f"[SELECTOR] Reconnect reason: {e}")
                     set_selector_connection_status(False, f"reconnect: {e}")
             finally:
-                client = self.client; self.client = None
+                client = self.client
+                self.client = None
                 if client:
-                    try: client.close()
-                    except Exception: pass
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
             if self.running:
                 log_debug(f"[SELECTOR] Reconnecting in {self.reconnect_delay:.1f}s")
                 time.sleep(self.reconnect_delay)
@@ -1902,8 +2076,7 @@ def handle_client(conn, addr):
                 try:
                     stop_recording()
                     clear_selector_guidance()
-                    set_selector_stop_wait("Waiting for all bits to place back...")
-                    wait_until_all_selector_bits_back()
+                    clear_missing_selector_bits()
                     clear_selector_stop_wait()
                     hide_corner_monitor()
                     next_cfg = move_to_next_screw_block()

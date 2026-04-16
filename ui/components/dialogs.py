@@ -3872,7 +3872,7 @@ class AssemblyDialog(QDialog):
         return None
 
     def load_bmp_from_annotation(self):
-        """Load BMP images specifically from Annotation folder"""
+        """Load images from Annotation folder"""
         try:
             self.available_products = []
             self.thumbnail_widgets = {}
@@ -3881,43 +3881,48 @@ class AssemblyDialog(QDialog):
             self.annotation_folder = self.get_annotation_folder_path()
 
             if not self.annotation_folder:
-                QMessageBox.warning(self, "⚠️ Annotation Folder Not Found",
-                                    "The 'Annotation' folder was not found in the current recipe.\n\n"
-                                    f"Current recipe: {self.get_current_recipe_path()}\n\n"
-                                    "Please ensure there is an 'Annotation' folder containing BMP images.")
+                QMessageBox.warning(
+                    self,
+                    "⚠️ Annotation Folder Not Found",
+                    "The 'Annotation' folder was not found in the current recipe.\n\n"
+                    f"Current recipe: {self.get_current_recipe_path()}\n\n"
+                    "Please ensure there is an 'Annotation' folder containing image files."
+                )
                 self.update_gallery()
                 return
 
-            # Search for BMP files in annotation folder
-            bmp_files = []
-            search_patterns = [
-                os.path.join(self.annotation_folder, "**", "*.bmp"),
-                os.path.join(self.annotation_folder, "**", "*.BMP"),
-                os.path.join(self.annotation_folder, "*.bmp"),
-                os.path.join(self.annotation_folder, "*.BMP"),
-            ]
+            # Search for image files in annotation folder
+            image_files = []
+            extensions = ["*.bmp", "*.BMP", "*.jpg", "*.JPG", "*.png", "*.PNG", "*.jpeg", "*.JPEG"]
 
-            for pattern in search_patterns:
+            for ext in extensions:
                 try:
-                    files = glob.glob(pattern, recursive=True)
-                    bmp_files.extend(files)
+                    image_files.extend(
+                        glob.glob(os.path.join(self.annotation_folder, "**", ext), recursive=True)
+                    )
+                    image_files.extend(
+                        glob.glob(os.path.join(self.annotation_folder, ext))
+                    )
                 except:
                     pass
 
             # Remove duplicates and sort
-            bmp_files = list(set(bmp_files))
-            bmp_files.sort()
+            image_files = list(set(image_files))
+            image_files.sort()
 
-            if not bmp_files:
-                QMessageBox.information(self, "📭 No BMP Files",
-                                        f"No BMP images found in Annotation folder:\n{self.annotation_folder}")
+            if not image_files:
+                QMessageBox.information(
+                    self,
+                    "📭 No Image Files",
+                    f"No image files found in Annotation folder:\n{self.annotation_folder}"
+                )
                 self.update_gallery()
                 return
 
-            # Process found BMP files
+            # Process found image files
             product_counter = {}
-            for bmp_path in bmp_files:
-                filename = os.path.basename(bmp_path)
+            for image_path in image_files:
+                filename = os.path.basename(image_path)
 
                 # Extract product name from filename
                 base_name = os.path.splitext(filename)[0]
@@ -3938,14 +3943,14 @@ class AssemblyDialog(QDialog):
 
                 # Get relative path
                 try:
-                    rel_path = os.path.relpath(bmp_path, self.annotation_folder)
+                    rel_path = os.path.relpath(image_path, self.annotation_folder)
                 except:
                     rel_path = filename
 
                 self.available_products.append({
                     'id': product_id,
                     'name': base_name,
-                    'image_path': bmp_path,
+                    'image_path': image_path,
                     'filename': filename,
                     'relative_path': rel_path,
                     'original_name': base_name

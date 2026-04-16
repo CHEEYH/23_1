@@ -760,6 +760,25 @@ class PipelineRunner:
 
             layout.addWidget(content_split, stretch=1)
 
+            # Status label
+            status_label = QLabel("READY")
+            status_label.setAlignment(Qt.AlignCenter)
+            status_label.setFixedHeight(42)
+            status_label.setStyleSheet("""
+                QLabel {
+                    font-size: 15px;
+                    font-weight: 900;
+                    color: #AACCEE;
+                    background-color: #050D18;
+                    border-top: 1px solid #0E2A40;
+                    border-bottom: 1px solid #0E2A40;
+                    font-family: Consolas;
+                    letter-spacing: 1px;
+                    padding: 6px 12px;
+                }
+            """)
+            layout.addWidget(status_label)
+
             # Bottom button
             close_btn = QPushButton("✓ Continue")
             close_btn.setStyleSheet("""
@@ -773,6 +792,13 @@ class PipelineRunner:
                 }
                 QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
                 QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
+                QPushButton:disabled {
+                    background-color: #0A1218;
+                    color: #557788;
+                    border-color: #223344;
+                    border-bottom: 5px solid #081018;
+                    border-left: 3px solid #334455;
+                }
             """)
             layout.addWidget(close_btn, alignment=Qt.AlignCenter)
 
@@ -795,29 +821,134 @@ class PipelineRunner:
             dialog._video_audio = audio
             player.play()
 
-            def close_video():
-                if _video_hand_triggered["done"]:
+            stop_request_state = {
+                "requested": False,
+                "completed": False,
+                "poll_count": 0,
+                "max_polls": 80,   # 80 * 100ms = 8 seconds
+            }
+
+            ack_timer = QTimer(dialog)
+            ack_timer.setInterval(100)
+
+            def finish_video_close():
+                if stop_request_state["completed"]:
                     return
+                stop_request_state["completed"] = True
                 _video_hand_triggered["done"] = True
+
+                try:
+                    if ack_timer.isActive():
+                        ack_timer.stop()
+                except Exception:
+                    pass
+
                 try:
                     player.stop()
                 except Exception:
                     pass
-                PipelineRunner.send_screw_stop_to_server()
+
                 dialog.accept()
+
+            def fail_stop_ack(message: str):
+                if stop_request_state["completed"]:
+                    return
+
+                stop_request_state["requested"] = False
+
+                try:
+                    if ack_timer.isActive():
+                        ack_timer.stop()
+                except Exception:
+                    pass
+
+                try:
+                    close_btn.setEnabled(True)
+                except Exception:
+                    pass
+
+                # status_label.setText(f"STOP FAILED: {message}")
+                # print(f"[SCREW VIDEO] Stop ACK failed: {message}")
+
+            def on_ack_timer():
+                if stop_request_state["completed"]:
+                    try:
+                        ack_timer.stop()
+                    except Exception:
+                        pass
+                    return
+
+                stop_request_state["poll_count"] += 1
+
+                got_reply, reply = PipelineRunner.read_screw_server_reply(timeout_sec=0.05)
+
+                if got_reply:
+                    reply_upper = str(reply).strip().upper()
+
+                    if PipelineRunner.is_stop_ack_reply(reply_upper):
+                        # status_label.setText("OK,STOP RECEIVED")
+                        print("[SCREW VIDEO] Received OK,STOP - closing dialog")
+                        finish_video_close()
+                        return
+
+                    if reply_upper.startswith("ERROR,STOP_FAILED"):
+                        fail_stop_ack(reply)
+                        return
+
+                    # Ignore unrelated replies such as RESULT,OK / RESULT,NG / INFO,...
+                    print(f"[SCREW VIDEO] Ignored TCP reply while waiting STOP ACK: {reply}")
+
+                elif isinstance(reply, str) and reply.startswith("SOCKET_ERROR"):
+                    fail_stop_ack(reply)
+                    return
+
+                if stop_request_state["poll_count"] >= stop_request_state["max_polls"]:
+                    fail_stop_ack("TIMEOUT WAITING FOR OK,STOP")
+
+            ack_timer.timeout.connect(on_ack_timer)
+
+            def request_video_close():
+                if stop_request_state["completed"]:
+                    return
+                if stop_request_state["requested"]:
+                    return
+
+                stop_request_state["requested"] = True
+                stop_request_state["poll_count"] = 0
+
+                try:
+                    close_btn.setEnabled(False)
+                except Exception:
+                    pass
+
+                status_label.setText("WAITING FOR OK,STOP ...")
+                print("[SCREW VIDEO] Stop requested, waiting for OK,STOP")
+
+                send_ok = PipelineRunner.send_screw_stop_to_server()
+                if not send_ok:
+                    fail_stop_ack("SEND screw_stop FAILED")
+                    return
+
+                ack_timer.start()
 
             def on_video_hand_trigger():
                 try:
-                    if _video_hand_triggered["done"]:
+                    if stop_request_state["completed"]:
                         return
                     print("[SCREW VIDEO] Hand detected in trigger zone!")
-                    close_video()
+                    request_video_close()
                 except Exception as e:
                     print(f"[SCREW VIDEO] Trigger error: {e}")
 
-            close_btn.clicked.connect(close_video)
+            close_btn.clicked.connect(request_video_close)
 
             def restore_trigger(_=None):
+                try:
+                    if ack_timer.isActive():
+                        ack_timer.stop()
+                except Exception:
+                    pass
+
                 try:
                     player.stop()
                 except Exception:
@@ -4140,47 +4271,107 @@ class PipelineRunner:
             server = config_manager.config_data.get('tcp_screw', {}).get('server', '127.0.0.1')
             port = config_manager.config_data.get('tcp_screw', {}).get('port', 5001)
 
-            # Check if already connected
             if PipelineRunner._screw_socket is None:
                 print(f"📤 Creating persistent connection to {server}:{port}")
                 PipelineRunner._screw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 PipelineRunner._screw_socket.settimeout(5)
                 PipelineRunner._screw_socket.connect((server, port))
                 PipelineRunner._screw_connected = True
-                print(f"✅ Persistent connection established")
+                print("✅ Persistent connection established")
 
-            # Send screw_start command
             PipelineRunner._screw_socket.sendall(b"screw_start\n")
-            print(f"✅ Screw start command sent")
+            print("✅ Screw start command sent")
             return True
 
         except Exception as e:
             print(f"❌ Failed to send screw start: {e}")
+            try:
+                if PipelineRunner._screw_socket:
+                    PipelineRunner._screw_socket.close()
+            except Exception:
+                pass
             PipelineRunner._screw_socket = None
+            PipelineRunner._screw_connected = False
             return False
 
     @staticmethod
     def send_screw_stop_to_server() -> bool:
-        """Send 'screw_stop' command to TCP screw server on port 5001"""
+        """Only send 'screw_stop'. Do NOT treat this as ACK success."""
         try:
             server = config_manager.config_data.get('tcp_screw', {}).get('server', '127.0.0.1')
             port = config_manager.config_data.get('tcp_screw', {}).get('port', 5001)
 
-            # Check if already connected
             if PipelineRunner._screw_socket is None:
                 print(f"📤 Creating persistent connection to {server}:{port}")
                 PipelineRunner._screw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 PipelineRunner._screw_socket.settimeout(5)
                 PipelineRunner._screw_socket.connect((server, port))
                 PipelineRunner._screw_connected = True
-                print(f"✅ Persistent connection established")
+                print("✅ Persistent connection established")
 
-            # Send screw_stop command
             PipelineRunner._screw_socket.sendall(b"screw_stop\n")
-            print(f"✅ Screw stop command sent")
+            print("✅ Screw stop command sent (waiting for ACK)")
             return True
 
         except Exception as e:
             print(f"❌ Failed to send screw stop: {e}")
+            try:
+                if PipelineRunner._screw_socket:
+                    PipelineRunner._screw_socket.close()
+            except Exception:
+                pass
             PipelineRunner._screw_socket = None
+            PipelineRunner._screw_connected = False
             return False
+
+    @staticmethod
+    def read_screw_server_reply(timeout_sec: float = 0.2):
+        """
+        Non-blocking-ish read for one TCP reply from screw server.
+        Returns:
+            (True,  reply)  -> got reply text
+            (False, None)   -> no reply yet / timeout
+            (False, "ERR")  -> socket error / disconnected
+        """
+        try:
+            if PipelineRunner._screw_socket is None:
+                return False, "NO_SOCKET"
+
+            old_timeout = PipelineRunner._screw_socket.gettimeout()
+            try:
+                PipelineRunner._screw_socket.settimeout(timeout_sec)
+                data = PipelineRunner._screw_socket.recv(1024)
+            finally:
+                try:
+                    PipelineRunner._screw_socket.settimeout(old_timeout)
+                except Exception:
+                    pass
+
+            if not data:
+                return False, "EMPTY_REPLY"
+
+            reply = data.decode("utf-8", errors="ignore").strip()
+            if reply:
+                print(f"[SCREW TCP] ← {reply}")
+                return True, reply
+
+            return False, None
+
+        except socket.timeout:
+            return False, None
+        except BlockingIOError:
+            return False, None
+        except Exception as e:
+            print(f"❌ Error reading screw server reply: {e}")
+            try:
+                if PipelineRunner._screw_socket:
+                    PipelineRunner._screw_socket.close()
+            except Exception:
+                pass
+            PipelineRunner._screw_socket = None
+            PipelineRunner._screw_connected = False
+            return False, f"SOCKET_ERROR: {e}"
+
+    @staticmethod
+    def is_stop_ack_reply(reply: str) -> bool:
+        return str(reply).strip().upper() == "OK,STOP"
