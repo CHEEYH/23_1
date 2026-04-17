@@ -311,7 +311,7 @@ class OrbbecCameraThread(QThread):
                 "waiting_qr": "SCAN QR THEN HOLD HERE",
                 "confirmed": "✓ CONFIRMED - RUNNING"
             }
-            label = labels.get(self.trigger_state, "TRIGGER BOX")
+            label = labels.get(self.trigger_state, "")
 
         show_countdown = hand_inside and not self.trigger_was_used and self.trigger_enter_time is not None
 
@@ -1056,6 +1056,9 @@ class OrbbecCameraThread(QThread):
 
         # ========== WRONG LOCATION FEEDBACK ==========
         if hand_in_wrong_location and not hit_target:
+            # 只要又回到 wrong location，就取消 pending clear
+            self.clear_error_start_time = None
+
             if self.wrong_location_enter_time is None:
                 self.wrong_location_enter_time = current_time
                 self.status_signal.emit(f"Hand on wrong location: {wrong_location_name}")
@@ -1067,7 +1070,7 @@ class OrbbecCameraThread(QThread):
                 remain = max(0.0, self.wrong_location_delay_sec - elapsed_in_wrong)
                 cv2.putText(
                     frame,
-                    f"{remain:.1f}s",
+                    f"Wrong location in: {remain:.1f}s",
                     (10, h - 80),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -1075,6 +1078,7 @@ class OrbbecCameraThread(QThread):
                     2
                 )
 
+            # 停留滿 1 秒才送 error
             if elapsed_in_wrong >= self.wrong_location_delay_sec:
                 if not self.error_sent:
                     self.send_tcp_message_async("error")
@@ -1085,28 +1089,33 @@ class OrbbecCameraThread(QThread):
                 self.play_wrong_location_sound_async()
                 cv2.putText(
                     frame,
-                    f"WRONG LOCATION! Hand on {wrong_location_name}",
+                    f"⚠ WRONG LOCATION! Hand on {wrong_location_name}",
                     (10, h - 110),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7,
                     (0, 0, 255),
                     2
                 )
-        else:
 
+        else:
+            # 離開 wrong location，開始 clear delay 計時
             if self.wrong_location_enter_time is not None:
                 self.wrong_location_enter_time = None
                 self.clear_error_start_time = current_time
 
+            # 50ms 後才 clear，而且前提是之前真的送過 error
             if self.clear_error_start_time is not None:
                 elapsed_clear = current_time - self.clear_error_start_time
 
                 if elapsed_clear >= self.clear_error_delay_sec:
-                    self.send_tcp_message_async("clear_error")
+                    if self.error_sent:
+                        self.send_tcp_message_async("clear_error")
+                        print("📤 [TCP] clear_error (after 50ms delay, only after error)")
+                    else:
+                        print("ℹ Skip clear_error because no error was sent")
+
                     self.error_sent = False
                     self.clear_error_start_time = None
-
-                    print("📤 [TCP] clear_error (after 50ms delay)")
 
         # ========== UI OK / NG / IDLE STATUS ==========
         current_time = time.perf_counter()

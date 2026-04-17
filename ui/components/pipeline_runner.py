@@ -36,10 +36,39 @@ from ultralytics import YOLO
 _DIALOG_BG   = "QDialog { background-color: #060C14; }"
 _BODY_BG     = "background-color: #060C14;"
 
+
+def _screen_scale():
+    try:
+        screen = QApplication.primaryScreen()
+        if screen:
+            geo = screen.availableGeometry()
+            sw = max(1, geo.width())
+            sh = max(1, geo.height())
+        else:
+            sw, sh = 1920, 1080
+    except Exception:
+        sw, sh = 1920, 1080
+
+    return max(0.72, min(1.25, min(sw / 1920.0, sh / 1080.0)))
+
+
+def _rs(v: int) -> int:
+    return max(1, int(v * _screen_scale()))
+
+
+def _rf(v: int) -> int:
+    return max(8, int(v * _screen_scale()))
+
+
+def _dialog_size(w: int, h: int, min_w_ratio: float = 0.72, min_h_ratio: float = 0.72):
+    return _rs(w), _rs(h), max(_rs(320), int(_rs(w) * min_w_ratio)), max(_rs(240), int(_rs(h) * min_h_ratio))
+
 def _tech_dialog(dialog, color="#00AAFF", size=None):
     """Make dialog frameless with tech border and body bg."""
-    dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-    if size: dialog.setFixedSize(*size)
+    dialog.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+    if size:
+        dialog.resize(*size)
+        dialog.setMinimumSize(max(_rs(320), int(size[0] * 0.7)), max(_rs(240), int(size[1] * 0.7)))
     border_col = {"#00AAFF":"#00AAFF","#FFAA00":"#FFAA00","#00FF88":"#00FF88","#FF3344":"#FF3344"}.get(color,"#00AAFF")
     dialog.setStyleSheet(f"QDialog {{ background-color: #060C14; border: 1px solid {border_col}33; }}")
 
@@ -50,41 +79,41 @@ def _tech_header(text, step_badge=None, color="#00AAFF", dlg_id=""):
 
 def _ss_hdr(color="#00AAFF", bg="#050D18", size=22):
     bd_b = {"#00AAFF":"#00AAFF","#FFAA00":"#FFAA00","#00FF88":"#00FF88","#FF3344":"#FF3344"}.get(color,"#00AAFF")
-    return (f"font-size:{size}px;font-weight:900;color:{color};"
-            f"background-color:{bg};border-bottom:2px solid {bd_b};"
-            f"border-left:4px solid {bd_b};padding:14px 18px;"
+    return (f"font-size:{_rf(size)}px;font-weight:900;color:{color};"
+            f"background-color:{bg};border-bottom:{_rs(2)}px solid {bd_b};"
+            f"border-left:{_rs(4)}px solid {bd_b};padding:{_rs(14)}px {_rs(18)}px;"
             f"letter-spacing:2px;font-family:Consolas;border-radius:0px;")
 
 def _ss_panel_header(color="#00AAFF"):
-    return (f"font-size:11px;font-weight:900;color:#AACCEE;"
-            f"padding:8px 12px;background-color:#050D18;"
+    return (f"font-size:{_rf(11)}px;font-weight:900;color:#AACCEE;"
+            f"padding:{_rs(8)}px {_rs(12)}px;background-color:#050D18;"
             f"border-bottom:1px solid #0E2A40;letter-spacing:3px;font-family:Consolas;")
 
 def _ss_inforow(color="#00AAFF44"):
-    return (f"background-color:#030810;border-left:3px solid {color};"
-            f"padding:5px 10px;font-family:Consolas;font-size:13px;color:#AACCEE;")
+    return (f"background-color:#030810;border-left:{_rs(3)}px solid {color};"
+            f"padding:{_rs(5)}px {_rs(10)}px;font-family:Consolas;font-size:{_rf(13)}px;color:#AACCEE;")
 
-def _ss_btn(color, bg, bd, size=17):
+def _ss_btn(color, bg, bd, size=22):
     hover = {"#00FF88":"#052A18","#FFAA00":"#221400","#FF3344":"#220810","#00AAFF":"#082030"}.get(color,"#0A1A0A")
-    return (f"font-size:{size}px;font-weight:900;padding:12px 20px;"
+    return (f"font-size:{_rf(size)}px;font-weight:900;padding:{_rs(18)}px {_rs(32)}px;"
             f"background-color:{bg};color:{color};"
-            f"border:1px solid {bd};border-bottom:5px solid #020508;"
-            f"border-left:3px solid {color};border-radius:0px;"
+            f"border:1px solid {bd};border-bottom:{_rs(7)}px solid #020508;"
+            f"border-left:{_rs(3)}px solid {color};border-radius:0px;"
             f"font-family:Consolas;letter-spacing:2px;"
             f"QPushButton:hover{{background-color:{hover};color:#FFFFFF;border-color:{color};}}"
-            f"QPushButton:pressed{{border-bottom:2px solid #020508;padding-top:3px;}}")
+            f"QPushButton:pressed{{border-bottom:{_rs(2)}px solid #020508;padding-top:{_rs(3)}px;}}")
 
 def _step_badge(step_num, total, color="#00AAFF"):
-    return (f"font-size:11px;font-weight:900;color:{color};"
+    return (f"font-size:{_rf(11)}px;font-weight:900;color:{color};"
             f"background-color:#030810;border:1px solid {color}44;"
-            f"padding:3px 12px;letter-spacing:3px;font-family:Consolas;")
+            f"padding:{_rs(3)}px {_rs(12)}px;letter-spacing:3px;font-family:Consolas;")
 
 def _dlg_id_style():
-    return "font-size:9px;color:#0A2A3A;letter-spacing:3px;font-family:Consolas;background:transparent;"
+    return f"font-size:{_rf(9)}px;color:#0A2A3A;letter-spacing:3px;font-family:Consolas;background:transparent;"
 
 def _ss_screw_cell():
-    return ("background-color:#050D18;padding:10px 14px;"
-            "border:1px solid #0E2A40;")
+    return (f"background-color:#050D18;padding:{_rs(10)}px {_rs(14)}px;"
+            f"border:1px solid #0E2A40;")
 
 class PipelineRunner:
     _api_client = None
@@ -604,8 +633,11 @@ class PipelineRunner:
     @staticmethod
     def _show_video_dialog(video_path: str, parent_widget=None, title: str = "Video") -> bool:
         try:
-            from PySide6.QtCore import QUrl
-            from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton, QWidget, QHBoxLayout, QSplitter
+            from PySide6.QtCore import QUrl, Qt, QTimer
+            from PySide6.QtWidgets import (
+                QDialog, QVBoxLayout, QLabel, QPushButton,
+                QWidget, QHBoxLayout, QSplitter, QMessageBox, QSizePolicy
+            )
             from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
             from PySide6.QtMultimediaWidgets import QVideoWidget
 
@@ -614,101 +646,174 @@ class PipelineRunner:
             dialog.showFullScreen()
             dialog.setStyleSheet("QDialog { background-color: #030810; }")
 
-            layout = QVBoxLayout(dialog)
-            layout.setContentsMargins(0, 0, 8, 8)
-            layout.setSpacing(8)
+            root = QVBoxLayout(dialog)
+            root.setContentsMargins(0, 0, 0, 0)
+            root.setSpacing(0)
 
-            # Get Orbbec thread and take over trigger for THIS dialog
             orbbec_thread = PipelineRunner.get_orbbec_thread()
-            _video_hand_triggered = {"done": False}
+            _video_done = {"done": False}
 
-            # Header
+            # =========================
+            # HEADER
+            # =========================
             vid_hdr = QWidget()
-            vid_hdr.setFixedHeight(56)
-            vid_hdr.setStyleSheet("background:#050D18;border-bottom:2px solid #FFAA00;")
-            vid_hdr_row = QHBoxLayout(vid_hdr)
-            vid_hdr_row.setContentsMargins(14, 0, 14, 0)
-            vid_hdr_row.setSpacing(10)
+            vid_hdr.setFixedHeight(_rs(70))
+            vid_hdr.setStyleSheet(f"background:#050D18;border-bottom:{_rs(2)}px solid #FFAA00;")
 
-            # vid_badge = QLabel("VIDEO")
-            # vid_badge.setStyleSheet(
-            #     "font-size:11px;font-weight:900;color:#FFAA00;"
-            #     "background:#030810;border:1px solid #FFAA0044;"
-            #     "padding:3px 10px;letter-spacing:3px;font-family:Consolas;"
-            # )
+            vid_hdr_row = QHBoxLayout(vid_hdr)
+            vid_hdr_row.setContentsMargins(_rs(18), 0, _rs(18), 0)
+            vid_hdr_row.setSpacing(_rs(12))
 
             vid_title = QLabel(title.upper())
             vid_title.setStyleSheet(
-                "font-size:26px;font-weight:900;color:#FFFFFF;"
-                "letter-spacing:2px;font-family:Consolas;background:transparent;"
+                f"font-size:{_rf(26)}px;font-weight:900;color:#FFFFFF;"
+                f"letter-spacing:2px;font-family:Consolas;background:transparent;"
             )
 
-            # vid_hdr_row.addWidget(vid_badge)
             vid_hdr_row.addWidget(vid_title)
             vid_hdr_row.addStretch()
-            layout.addWidget(vid_hdr)
+            root.addWidget(vid_hdr)
 
-            # If video file not found
+            # =========================
+            # MAIN SPLIT: LEFT / RIGHT
+            # =========================
+            content_split = QSplitter(Qt.Orientation.Horizontal)
+            content_split.setChildrenCollapsible(False)
+            content_split.setHandleWidth(_rs(2))
+            content_split.setStyleSheet(f"""
+                QSplitter::handle {{
+                    background-color: #0E2A40;
+                    width: {_rs(2)}px;
+                }}
+            """)
+
+            # -------- LEFT PANEL (VIDEO) --------
+            left_panel = QWidget()
+            left_panel.setStyleSheet("background-color: #030810;")
+            left_layout = QVBoxLayout(left_panel)
+            left_layout.setContentsMargins(_rs(10), _rs(10), _rs(10), _rs(10))
+            left_layout.setSpacing(_rs(8))
+
+            left_hdr = QLabel("VIDEO PANEL")
+            left_hdr.setFixedHeight(_rs(40))
+            left_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            left_hdr.setStyleSheet(
+                f"font-size:{_rf(12)}px;font-weight:900;color:#AACCEE;"
+                f"background:#050D18;border:1px solid #0E2A40;"
+                f"letter-spacing:3px;font-family:Consolas;"
+            )
+            left_layout.addWidget(left_hdr)
+
+            video_frame = QWidget()
+            video_frame.setStyleSheet("background-color: #000000; border: 1px solid #0E2A40;")
+            video_frame_layout = QVBoxLayout(video_frame)
+            video_frame_layout.setContentsMargins(0, 0, 0, 0)
+
+            video_widget = QVideoWidget()
+            video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            video_widget.setStyleSheet("background-color: #000000;")
+            video_frame_layout.addWidget(video_widget)
+
+            left_layout.addWidget(video_frame, stretch=1)
+
+            # -------- RIGHT PANEL (EMPTY) --------
+            right_panel = QWidget()
+            right_panel.setStyleSheet("background-color: #030810;")
+
+            content_split.addWidget(left_panel)
+            content_split.addWidget(right_panel)
+
+            # left smaller, right bigger
+            content_split.setStretchFactor(0, 6)
+            content_split.setStretchFactor(1, 4)
+
+            content_split.setSizes([1400, 600])
+
+
+            root.addWidget(content_split, stretch=1)
+
+            # =========================
+            # BOTTOM CENTER BUTTON
+            # =========================
+            btn_container = QWidget()
+            btn_container.setStyleSheet("background-color: #030810;")
+            btn_layout = QHBoxLayout(btn_container)
+            btn_layout.setContentsMargins(0, _rs(10), 0, _rs(20))
+            btn_layout.setSpacing(0)
+
+            btn_layout.addStretch()
+
+            close_btn = QPushButton("▶ CONTINUE")
+            close_btn.setMinimumHeight(_rs(70))
+            close_btn.setMinimumWidth(_rs(220))
+            close_btn.setStyleSheet(f"""
+                QPushButton {{
+                    font-size:{_rf(20)}px;
+                    font-weight:900;
+                    padding:{_rs(10)}px {_rs(20)}px;
+                    background-color:#031A10;
+                    color:#00FF88;
+                    border:1px solid #0A5030;
+                    border-bottom:{_rs(5)}px solid #051008;
+                    border-left:{_rs(4)}px solid #00FF88;
+                    border-radius:2px;
+                    font-family:Consolas;
+                    letter-spacing:3px;
+                }}
+                QPushButton:hover {{
+                    background-color:#052A18;
+                    color:#FFFFFF;
+                    border-color:#00FF88;
+                }}
+                QPushButton:pressed {{
+                    border-bottom:{_rs(2)}px solid #051008;
+                    padding-top:{_rs(3)}px;
+                }}
+                QPushButton:disabled {{
+                    background-color:#0A1218;
+                    color:#557788;
+                    border-color:#223344;
+                    border-bottom:{_rs(7)}px solid #081018;
+                    border-left:{_rs(4)}px solid #334455;
+                }}
+            """)
+
+            btn_layout.addWidget(close_btn)
+            btn_layout.addStretch()
+            root.addWidget(btn_container)
+
+            # =========================
+            # VIDEO NOT FOUND UI
+            # =========================
             if not os.path.exists(video_path):
-                content_split = QSplitter(Qt.Horizontal)
-                content_split.setStyleSheet("""
-                    QSplitter::handle {
-                        background-color: #0E2A40;
-                        width: 2px;
-                    }
+                left_layout.removeWidget(video_frame)
+                video_frame.deleteLater()
+
+                missing_label = QLabel(f"❌ Video not found:\n{video_path}")
+                missing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                missing_label.setWordWrap(True)
+                missing_label.setStyleSheet(f"""
+                    QLabel {{
+                        font-size:{_rf(18)}px;
+                        color:#FF3344;
+                        background-color:#1A0508;
+                        border:1px solid #661020;
+                        border-left:{_rs(3)}px solid #FF3344;
+                        padding:{_rs(20)}px;
+                        border-radius:2px;
+                    }}
                 """)
-
-                left_panel = QWidget()
-                left_layout = QVBoxLayout(left_panel)
-                left_layout.setContentsMargins(8, 8, 8, 8)
-
-                error_label = QLabel(f"❌ Video not found:\n{video_path}")
-                error_label.setAlignment(Qt.AlignCenter)
-                error_label.setStyleSheet("""
-                    QLabel {
-                        font-size: 18px;
-                        color: #FF3344;
-                        background-color: #1A0508;
-                        border: 1px solid #661020;
-                        border-left: 3px solid #FF3344;
-                        padding: 20px;
-                        border-radius: 2px;
-                    }
-                """)
-                left_layout.addWidget(error_label)
-
-                right_panel = QWidget()
-                right_panel.setStyleSheet("background-color: #030810; border: 1px solid #0E2A40;")
-
-                content_split.addWidget(left_panel)
-                content_split.addWidget(right_panel)
-                content_split.setSizes([1100, 500])
-
-                layout.addWidget(content_split, stretch=1)
-
-                close_btn = QPushButton("✓  Continue")
-                close_btn.setStyleSheet("""
-                    QPushButton {
-                        font-size: 17px; font-weight: 800;
-                        padding: 16px 32px;
-                        background-color: #031A10; color: #00FF88;
-                        border: 1px solid #0A5030; border-bottom: 5px solid #051008;
-                        border-left: 3px solid #00FF88; border-radius: 2px;
-                        min-width: 240px; font-family: Consolas; letter-spacing: 1px;
-                    }
-                    QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
-                    QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
-                """)
+                left_layout.addWidget(missing_label, stretch=1)
 
                 def close_missing_video():
-                    if _video_hand_triggered["done"]:
+                    if _video_done["done"]:
                         return
-                    _video_hand_triggered["done"] = True
+                    _video_done["done"] = True
                     dialog.accept()
 
                 def on_video_hand_trigger_missing():
                     try:
-                        if _video_hand_triggered["done"]:
+                        if _video_done["done"]:
                             return
                         print("[SCREW VIDEO] Hand detected in trigger zone (missing video page)")
                         close_missing_video()
@@ -716,92 +821,29 @@ class PipelineRunner:
                         print(f"[SCREW VIDEO] Trigger error (missing video): {e}")
 
                 close_btn.clicked.connect(close_missing_video)
-                layout.addWidget(close_btn, alignment=Qt.AlignCenter)
 
-                PipelineRunner.set_orbbec_trigger(orbbec_thread, on_video_hand_trigger_missing, state="video", signal_type="start")
+                PipelineRunner.set_orbbec_trigger(
+                    orbbec_thread,
+                    on_video_hand_trigger_missing,
+                    state="video",
+                    signal_type="start"
+                )
 
                 def restore_trigger_missing(_=None):
                     try:
-                        PipelineRunner.restore_mainpage_orbbec_trigger(orbbec_thread, reason="screw_video_missing")
+                        PipelineRunner.restore_mainpage_orbbec_trigger(
+                            orbbec_thread,
+                            reason="screw_video_missing"
+                        )
                     except Exception as e:
                         print(f"[SCREW VIDEO] Restore trigger error (missing video): {e}")
 
                 dialog.finished.connect(restore_trigger_missing)
+                return dialog.exec() == QDialog.DialogCode.Accepted
 
-                return dialog.exec() == QDialog.Accepted
-
-            # Main split area: LEFT = video, RIGHT = blank
-            content_split = QSplitter(Qt.Horizontal)
-            content_split.setStyleSheet("""
-                QSplitter::handle {
-                    background-color: #0E2A40;
-                    width: 2px;
-                }
-            """)
-
-            # Left panel - video
-            left_panel = QWidget()
-            left_panel.setStyleSheet("background-color: #030810;")
-            left_layout = QVBoxLayout(left_panel)
-            left_layout.setContentsMargins(8, 8, 8, 8)
-            left_layout.setSpacing(0)
-
-            video_widget = QVideoWidget()
-            video_widget.setStyleSheet("background-color: #000000; border: 1px solid #0E2A40;")
-            left_layout.addWidget(video_widget)
-
-            # Right panel - blank
-            right_panel = QWidget()
-            right_panel.setStyleSheet("background-color: #030810; border: 1px solid #0E2A40;")
-
-            content_split.addWidget(left_panel)
-            content_split.addWidget(right_panel)
-            content_split.setSizes([1100, 500])
-
-            layout.addWidget(content_split, stretch=1)
-
-            # Status label
-            status_label = QLabel("READY")
-            status_label.setAlignment(Qt.AlignCenter)
-            status_label.setFixedHeight(42)
-            status_label.setStyleSheet("""
-                QLabel {
-                    font-size: 15px;
-                    font-weight: 900;
-                    color: #AACCEE;
-                    background-color: #050D18;
-                    border-top: 1px solid #0E2A40;
-                    border-bottom: 1px solid #0E2A40;
-                    font-family: Consolas;
-                    letter-spacing: 1px;
-                    padding: 6px 12px;
-                }
-            """)
-            layout.addWidget(status_label)
-
-            # Bottom button
-            close_btn = QPushButton("✓ Continue")
-            close_btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 17px; font-weight: 800;
-                    padding: 16px 32px;
-                    background-color: #031A10; color: #00FF88;
-                    border: 1px solid #0A5030; border-bottom: 5px solid #051008;
-                    border-left: 3px solid #00FF88; border-radius: 2px;
-                    min-width: 240px; font-family: Consolas; letter-spacing: 1px;
-                }
-                QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
-                QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
-                QPushButton:disabled {
-                    background-color: #0A1218;
-                    color: #557788;
-                    border-color: #223344;
-                    border-bottom: 5px solid #081018;
-                    border-left: 3px solid #334455;
-                }
-            """)
-            layout.addWidget(close_btn, alignment=Qt.AlignCenter)
-
+            # =========================
+            # PLAYER
+            # =========================
             player = QMediaPlayer(dialog)
             audio = QAudioOutput(dialog)
             player.setAudioOutput(audio)
@@ -809,9 +851,8 @@ class PipelineRunner:
             player.setSource(QUrl.fromLocalFile(video_path))
             audio.setVolume(0.0)
 
-            def loop_video(status):
-                from PySide6.QtMultimedia import QMediaPlayer
-                if status == QMediaPlayer.EndOfMedia:
+            def loop_video(media_status):
+                if media_status == QMediaPlayer.MediaStatus.EndOfMedia:
                     player.stop()
                     player.setPosition(0)
                     player.play()
@@ -825,7 +866,7 @@ class PipelineRunner:
                 "requested": False,
                 "completed": False,
                 "poll_count": 0,
-                "max_polls": 80,   # 80 * 100ms = 8 seconds
+                "max_polls": 80,
             }
 
             ack_timer = QTimer(dialog)
@@ -834,8 +875,9 @@ class PipelineRunner:
             def finish_video_close():
                 if stop_request_state["completed"]:
                     return
+
                 stop_request_state["completed"] = True
-                _video_hand_triggered["done"] = True
+                _video_done["done"] = True
 
                 try:
                     if ack_timer.isActive():
@@ -867,10 +909,10 @@ class PipelineRunner:
                 except Exception:
                     pass
 
-                # status_label.setText(f"STOP FAILED: {message}")
-                # print(f"[SCREW VIDEO] Stop ACK failed: {message}")
+                print(f"[SCREW VIDEO] Stop ACK failed: {message}")
 
             def on_ack_timer():
+                # 已完成 → 停止 timer
                 if stop_request_state["completed"]:
                     try:
                         ack_timer.stop()
@@ -878,31 +920,93 @@ class PipelineRunner:
                         pass
                     return
 
+                # 轮询计数
                 stop_request_state["poll_count"] += 1
 
-                got_reply, reply = PipelineRunner.read_screw_server_reply(timeout_sec=0.05)
+                try:
+                    # 读取 TCP（你原本的 function）
+                    got_reply, reply = PipelineRunner.read_screw_server_reply(timeout_sec=0.05)
 
-                if got_reply:
-                    reply_upper = str(reply).strip().upper()
+                    if got_reply and reply:
+                        raw = str(reply)
+                        print(f"[SCREW TCP RAW] ← {raw}")
 
-                    if PipelineRunner.is_stop_ack_reply(reply_upper):
-                        # status_label.setText("OK,STOP RECEIVED")
-                        print("[SCREW VIDEO] Received OK,STOP - closing dialog")
-                        finish_video_close()
-                        return
+                        # =============================
+                        # 🔥 关键：拆包（解决粘包问题）
+                        # =============================
+                        text = raw.replace("\r", "\n")
 
-                    if reply_upper.startswith("ERROR,STOP_FAILED"):
+                        # 强制拆关键 message（避免连在一起）
+                        text = text.replace("OK,STOP", "\nOK,STOP\n")
+                        text = text.replace("ERROR,WRONG_SCREW", "\nERROR,WRONG_SCREW\n")
+                        text = text.replace("ERROR,STOP_FAILED", "\nERROR,STOP_FAILED\n")
+
+                        parts = [p.strip().upper() for p in text.split("\n") if p.strip()]
+
+                        # =============================
+                        # 🔍 逐条解析
+                        # =============================
+                        for msg in parts:
+                            print(f"[SCREW VIDEO] Parsed message: {msg}")
+
+                            # ✅ 成功 → 关 dialog
+                            if "OK,STOP" in msg:
+                                print("[SCREW VIDEO] ✅ OK,STOP received - closing dialog")
+                                finish_video_close()
+                                return
+
+                            # ❌ Wrong screw → 不关
+                            if "ERROR,WRONG_SCREW" in msg:
+                                print("[SCREW VIDEO] ❌ Wrong screw detected")
+                                stop_request_state["requested"] = False
+
+                                try:
+                                    close_btn.setEnabled(True)
+                                except Exception:
+                                    pass
+
+                                return
+
+                            # ❌ Stop failed → 不关
+                            if "ERROR,STOP_FAILED" in msg:
+                                print("[SCREW VIDEO] ❌ Stop failed")
+                                stop_request_state["requested"] = False
+
+                                try:
+                                    close_btn.setEnabled(True)
+                                except Exception:
+                                    pass
+
+                                return
+
+                            # ❌ 其他 ERROR
+                            if msg.startswith("ERROR"):
+                                print(f"[SCREW VIDEO] ⚠ Other error: {msg}")
+                                stop_request_state["requested"] = False
+
+                                try:
+                                    close_btn.setEnabled(True)
+                                except Exception:
+                                    pass
+
+                                return
+
+                        # 如果都不是 → ignore
+                        print(f"[SCREW VIDEO] Ignored TCP reply while waiting STOP ACK: {raw}")
+
+                    elif isinstance(reply, str) and reply.startswith("SOCKET_ERROR"):
+                        print(f"[SCREW VIDEO] Socket error: {reply}")
                         fail_stop_ack(reply)
                         return
 
-                    # Ignore unrelated replies such as RESULT,OK / RESULT,NG / INFO,...
-                    print(f"[SCREW VIDEO] Ignored TCP reply while waiting STOP ACK: {reply}")
+                except Exception as e:
+                    print(f"[SCREW VIDEO] ACK read error: {e}")
 
-                elif isinstance(reply, str) and reply.startswith("SOCKET_ERROR"):
-                    fail_stop_ack(reply)
-                    return
-
+                # =============================
+                # ⏱ Timeout
+                # =============================
                 if stop_request_state["poll_count"] >= stop_request_state["max_polls"]:
+                    print("[SCREW VIDEO] ❌ Timeout waiting for OK,STOP")
                     fail_stop_ack("TIMEOUT WAITING FOR OK,STOP")
 
             ack_timer.timeout.connect(on_ack_timer)
@@ -921,8 +1025,9 @@ class PipelineRunner:
                 except Exception:
                     pass
 
-                status_label.setText("WAITING FOR OK,STOP ...")
                 print("[SCREW VIDEO] Stop requested, waiting for OK,STOP")
+
+                PipelineRunner._clear_screw_socket_buffer()
 
                 send_ok = PipelineRunner.send_screw_stop_to_server()
                 if not send_ok:
@@ -955,15 +1060,23 @@ class PipelineRunner:
                     pass
 
                 try:
-                    PipelineRunner.restore_mainpage_orbbec_trigger(orbbec_thread, reason="screw_video_close")
+                    PipelineRunner.restore_mainpage_orbbec_trigger(
+                        orbbec_thread,
+                        reason="screw_video_close"
+                    )
                     print("[SCREW VIDEO] Trigger restored to MainPage")
                 except Exception as e:
                     print(f"[SCREW VIDEO] Restore trigger error: {e}")
 
-            PipelineRunner.set_orbbec_trigger(orbbec_thread, on_video_hand_trigger, state="video", signal_type="start")
+            PipelineRunner.set_orbbec_trigger(
+                orbbec_thread,
+                on_video_hand_trigger,
+                state="video",
+                signal_type="start"
+            )
             dialog.finished.connect(restore_trigger)
 
-            return dialog.exec() == QDialog.Accepted
+            return dialog.exec() == QDialog.DialogCode.Accepted
 
         except Exception as e:
             print(f"❌ Error showing video dialog: {e}")
@@ -1038,8 +1151,8 @@ class PipelineRunner:
                             completed_steps.append(step_num)
                         steps_completed_now.append(step_num)
                     except Exception as e:
-                        reply = QMessageBox.question(parent_widget, "Camera Error", f"Cannot open camera: {str(e)}\n\nSkip this step?", QMessageBox.Yes | QMessageBox.No)
-                        if reply == QMessageBox.Yes:
+                        reply = QMessageBox.question(parent_widget, "Camera Error", f"Cannot open camera: {str(e)}\n\nSkip this step?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                        if reply == QMessageBox.StandardButton.Yes:
                             remaining_skipped_steps.append(skip_info)
                         else:
                             return False
@@ -1256,8 +1369,8 @@ class PipelineRunner:
                         open_realsense_camera()
                         job_data['completed_steps'].append(step_num)
                     except Exception as e:
-                        reply = QMessageBox.question(parent_widget, "Camera Error", f"Cannot open camera: {str(e)}\n\nSkip this step?", QMessageBox.Yes | QMessageBox.No)
-                        if reply == QMessageBox.Yes:
+                        reply = QMessageBox.question(parent_widget, "Camera Error", f"Cannot open camera: {str(e)}\n\nSkip this step?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                        if reply == QMessageBox.StandardButton.Yes:
                             job_data['skipped_steps'].append({'step': step_num, 'reason': 'camera_error'})
                         else:
                             return False
@@ -1294,8 +1407,9 @@ class PipelineRunner:
                 # ── TECH SUCCESS DIALOG ────────────────────────────────────
                 success_dialog = QDialog(parent_widget)
                 success_dialog.setWindowTitle("Assembly Complete")
-                success_dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-                success_dialog.setFixedSize(600, 460)
+                success_dialog.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+                success_dialog.resize(_rs(600), _rs(460))
+                success_dialog.setMinimumSize(_rs(420), _rs(340))
                 success_dialog.setStyleSheet("QDialog { background-color: #030810; border: 1px solid #00FF8844; }")
                 suc_layout = QVBoxLayout(success_dialog)
                 suc_layout.setContentsMargins(0, 0, 0, 0)
@@ -1306,7 +1420,7 @@ class PipelineRunner:
 
                 # Header bar
                 suc_hdr = QWidget()
-                suc_hdr.setFixedHeight(70)
+                suc_hdr.setFixedHeight(_rs(70))
                 suc_hdr.setStyleSheet("background:#031A10;")
                 suc_hdr_row = QHBoxLayout(suc_hdr)
                 suc_hdr_row.setContentsMargins(14, 0, 14, 0)
@@ -1314,14 +1428,14 @@ class PipelineRunner:
 
                 suc_badge = QLabel("COMPLETE")
                 suc_badge.setStyleSheet(
-                    "font-size:14px;font-weight:900;color:#00FF88;background:#021008;"
-                    "border:1px solid #00FF8844;padding:4px 14px;letter-spacing:3px;font-family:Consolas;"
+                    f"font-size:{_rf(14)}px;font-weight:900;color:#00FF88;background:#021008;"
+                    f"border:1px solid #00FF8844;padding:{_rs(4)}px {_rs(14)}px;letter-spacing:3px;font-family:Consolas;"
                 )
 
                 suc_title = QLabel("ASSEMBLY COMPLETE")
                 suc_title.setStyleSheet(
-                    "font-size:22px;font-weight:900;color:#00FF88;"
-                    "letter-spacing:3px;font-family:Consolas;background:transparent;"
+                    f"font-size:{_rf(22)}px;font-weight:900;color:#00FF88;"
+                    f"letter-spacing:3px;font-family:Consolas;background:transparent;"
                 )
 
                 suc_badge.hide()
@@ -1330,18 +1444,18 @@ class PipelineRunner:
                 suc_layout.addWidget(suc_hdr)
 
                 suc_sep = QWidget()
-                suc_sep.setFixedHeight(2)
+                suc_sep.setFixedHeight(_rs(2))
                 suc_sep.setStyleSheet("background:#00FF88;")
                 suc_layout.addWidget(suc_sep)
 
                 tick_label = QLabel("✓")
-                tick_label.setAlignment(Qt.AlignCenter)
-                tick_label.setFixedHeight(150)
-                tick_label.setStyleSheet("font-size:110px;color:#00FF88;background:#031A10;font-weight:900;")
+                tick_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                tick_label.setFixedHeight(_rs(100))
+                tick_label.setStyleSheet(f"font-size:{_rf(110)}px;color:#00FF88;background:#031A10;font-weight:900;")
                 suc_layout.addWidget(tick_label)
 
                 tick_div = QWidget()
-                tick_div.setFixedHeight(1)
+                tick_div.setFixedHeight(_rs(1))
                 tick_div.setStyleSheet("background:#0E2A40;")
                 suc_layout.addWidget(tick_div)
 
@@ -1357,7 +1471,7 @@ class PipelineRunner:
                     ("TCP", tcp_str, tcp_color)
                 ]:
                     rw = QWidget()
-                    rw.setFixedHeight(64)
+                    rw.setMinimumHeight(_rs(64))
                     rw.setStyleSheet(
                         "background:#030810;border-bottom:1px solid #0E2A40;border-left:3px solid #00FF8844;")
                     rwl = QHBoxLayout(rw)
@@ -1366,13 +1480,13 @@ class PipelineRunner:
 
                     lk = QLabel(sk)
                     lk.setStyleSheet(
-                        "font-size:20px;color:#1A5A2A;letter-spacing:2px;"
-                        "font-family:Consolas;background:transparent;min-width:120px;"
+                        f"font-size:{_rf(20)}px;color:#1A5A2A;letter-spacing:2px;"
+                        f"font-family:Consolas;background:transparent;min-width:{_rs(120)}px;"
                     )
 
                     lv = QLabel(sv)
                     lv.setStyleSheet(
-                        f"font-size:16px;color:{sc};font-weight:900;font-family:Consolas;background:transparent;"
+                        f"font-size:{_rf(16)}px;color:{sc};font-weight:900;font-family:Consolas;background:transparent;"
                     )
 
                     rwl.addWidget(lk)
@@ -1381,9 +1495,9 @@ class PipelineRunner:
                     suc_layout.addWidget(rw)
 
                 ok_btn = QPushButton("▶  CONTINUE")
-                ok_btn.setFixedHeight(70)
+                ok_btn.setMinimumHeight(_rs(95))
                 ok_btn.setStyleSheet(
-                    "font-size:20px;font-weight:900;background:#031A10;color:#00FF88;"
+                    f"font-size:{_rf(26)}px;font-weight:900;background:#031A10;color:#00FF88;"
                     "border:none;border-top:2px solid #00FF88;font-family:Consolas;letter-spacing:3px;"
                     "QPushButton:hover{background:#052A18;color:#FFFFFF;}"
                 )
@@ -1528,8 +1642,9 @@ class PipelineRunner:
     def _ask_operator_about_missing_part(step_num: int, product_name: str, part_needed: str, current_stock: int, parent_widget) -> str:
         dialog = QDialog(parent_widget)
         dialog.setWindowTitle(f"Step {step_num} - Missing Part")
-        dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        dialog.setFixedSize(560, 440)
+        dialog.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        dialog.resize(_rs(560), _rs(440))
+        dialog.setMinimumSize(_rs(420), _rs(340))
         dialog.setStyleSheet("QDialog { background-color: #030810; border: 1px solid #FFAA0066; }")
 
         layout = QVBoxLayout(dialog)
@@ -1538,21 +1653,21 @@ class PipelineRunner:
 
         # Header bar
         miss_hdr = QWidget()
-        miss_hdr.setFixedHeight(56)
-        miss_hdr.setStyleSheet("background:#050D18;border-bottom:2px solid #FFAA00;")
+        miss_hdr.setFixedHeight(_rs(56))
+        miss_hdr.setStyleSheet(f"background:#050D18;border-bottom:{_rs(2)}px solid #FFAA00;")
         miss_hdr_row = QHBoxLayout(miss_hdr); miss_hdr_row.setContentsMargins(14,0,14,0); miss_hdr_row.setSpacing(10)
         miss_badge = QLabel(f"STEP {step_num}")
-        miss_badge.setStyleSheet("font-size:11px;font-weight:900;color:#FFAA00;background:#030810;border:1px solid #FFAA0044;padding:3px 10px;letter-spacing:3px;font-family:Consolas;")
+        miss_badge.setStyleSheet(f"font-size:{_rf(11)}px;font-weight:900;color:#FFAA00;background:#030810;border:1px solid #FFAA0044;padding:{_rs(3)}px {_rs(10)}px;letter-spacing:3px;font-family:Consolas;")
         miss_title = QLabel("MISSING PART")
-        miss_title.setStyleSheet("font-size:18px;font-weight:900;color:#FFFFFF;letter-spacing:3px;font-family:Consolas;background:transparent;")
+        miss_title.setStyleSheet(f"font-size:{_rf(18)}px;font-weight:900;color:#FFFFFF;letter-spacing:3px;font-family:Consolas;background:transparent;")
         miss_hdr_row.addWidget(miss_badge); miss_hdr_row.addWidget(miss_title); miss_hdr_row.addStretch()
         layout.addWidget(miss_hdr)
 
         # Warning icon
         warning_label = QLabel("⚠")
-        warning_label.setFixedHeight(70)
-        warning_label.setStyleSheet("font-size:44px;color:#FFAA00;background:#050D18;border-bottom:1px solid #0E2A40;")
-        warning_label.setAlignment(Qt.AlignCenter)
+        warning_label.setFixedHeight(_rs(70))
+        warning_label.setStyleSheet(f"font-size:{_rf(44)}px;color:#FFAA00;background:#050D18;border-bottom:1px solid #0E2A40;")
+        warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(warning_label)
 
         # Data rows
@@ -1565,8 +1680,8 @@ class PipelineRunner:
             left_accent = "#FFAA00" if row_color == "#FFFFFF" else "#FF3344"
             rw.setStyleSheet(f"background:{row_bg};border-bottom:1px solid #0E2A40;border-left:3px solid {left_accent};")
             rwl = QHBoxLayout(rw); rwl.setContentsMargins(14,10,14,10); rwl.setSpacing(12)
-            lk = QLabel(row_lbl); lk.setStyleSheet("font-size:10px;color:#553300;letter-spacing:3px;font-family:Consolas;background:transparent;min-width:80px;")
-            lv = QLabel(row_val); lv.setStyleSheet(f"font-size:18px;color:{row_color};font-weight:900;font-family:Consolas;background:transparent;")
+            lk = QLabel(row_lbl); lk.setStyleSheet(f"font-size:{_rf(10)}px;color:#553300;letter-spacing:3px;font-family:Consolas;background:transparent;min-width:{_rs(80)}px;")
+            lv = QLabel(row_val); lv.setStyleSheet(f"font-size:{_rf(18)}px;color:{row_color};font-weight:900;font-family:Consolas;background:transparent;")
             lv.setWordWrap(True)
             rwl.addWidget(lk); rwl.addWidget(lv); rwl.addStretch()
             layout.addWidget(rw)
@@ -1575,45 +1690,45 @@ class PipelineRunner:
         btn_layout.setContentsMargins(20, 0, 20, 0)
 
         skip_btn = QPushButton("⏭  SKIP")
-        skip_btn.setFixedHeight(54)
+        skip_btn.setMinimumHeight(_rs(54))
         skip_btn.setStyleSheet("""
             QPushButton {
-                font-size: 16px; font-weight: 800;
+                font-size: {_rf(16)}px; font-weight: 800;
                 background-color: #1A1000; color: #FFAA00;
                 border: 1px solid #553300; border-bottom: 5px solid #331A00;
                 border-left: 3px solid #FFAA00; border-radius: 2px;
                 font-family: Consolas; letter-spacing: 1px;
             }
             QPushButton:hover { background-color: #221400; color: #FFFFFF; border-color: #FFAA00; }
-            QPushButton:pressed { border-bottom: 2px solid #331A00; padding-top: 3px; }
+            QPushButton:pressed { border-bottom: 2px solid #331A00; padding-top: {_rs(3)}px; }
         """)
 
         wait_btn = QPushButton("⏳  WAIT")
-        wait_btn.setFixedHeight(54)
+        wait_btn.setMinimumHeight(_rs(54))
         wait_btn.setStyleSheet("""
             QPushButton {
-                font-size: 16px; font-weight: 800;
+                font-size: {_rf(16)}px; font-weight: 800;
                 background-color: #041828; color: #00AAFF;
                 border: 1px solid #1A5A80; border-bottom: 5px solid #0A2A50;
                 border-left: 3px solid #00AAFF; border-radius: 2px;
                 font-family: Consolas; letter-spacing: 1px;
             }
             QPushButton:hover { background-color: #082030; color: #FFFFFF; border-color: #00AAFF; }
-            QPushButton:pressed { border-bottom: 2px solid #0A2A50; padding-top: 3px; }
+            QPushButton:pressed { border-bottom: 2px solid #0A2A50; padding-top: {_rs(3)}px; }
         """)
 
         cancel_btn = QPushButton("✕  CANCEL")
-        cancel_btn.setFixedHeight(54)
+        cancel_btn.setMinimumHeight(_rs(54))
         cancel_btn.setStyleSheet("""
             QPushButton {
-                font-size: 16px; font-weight: 800;
+                font-size: {_rf(16)}px; font-weight: 800;
                 background-color: #1A0508; color: #FF3344;
                 border: 1px solid #661020; border-bottom: 5px solid #440010;
-                border-left: 3px solid #FF3344; border-radius: 2px;
+                border-left: {_rs(3)}px solid #FF3344; border-radius: {_rs(2)}px;
                 font-family: Consolas; letter-spacing: 1px;
             }
             QPushButton:hover { background-color: #220810; color: #FFFFFF; border-color: #FF3344; }
-            QPushButton:pressed { border-bottom: 2px solid #440010; padding-top: 3px; }
+            QPushButton:pressed { border-bottom: 2px solid #440010; padding-top: {_rs(3)}px; }
         """)
 
         skip_btn.clicked.connect(lambda: dialog.done(1))
@@ -1889,7 +2004,7 @@ class PipelineRunner:
         blink_state = {"visible": True, "mode": "idle"}  # idle / ok / ng
 
         status_overlay = QLabel(dialog)
-        status_overlay.setAlignment(Qt.AlignCenter)
+        status_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         status_overlay.setVisible(False)
         status_overlay.raise_()
         status_overlay.setText("")
@@ -2206,7 +2321,7 @@ class PipelineRunner:
 
         # ── TECH HEADER BAR ──────────────────────────────────────────────
         hdr_bar = QWidget()
-        hdr_bar.setFixedHeight(80)
+        hdr_bar.setFixedHeight(_rs(80))
         hdr_bar.setStyleSheet(
             "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             "stop:0 #0A1828,stop:0.5 #060C14,stop:1 #050D18);"
@@ -2218,14 +2333,14 @@ class PipelineRunner:
 
         step_badge = QLabel(f"STEP {step_number}/{total_steps}")
         step_badge.setStyleSheet(
-            "font-size:16px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:4px 14px;letter-spacing:2px;font-family:Consolas;"
+            f"font-size:{_rf(16)}px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:{_rs(4)}px {_rs(14)}px;letter-spacing:2px;font-family:Consolas;"
         )
-        step_badge.setFixedHeight(24)
+        step_badge.setFixedHeight(_rs(24))
         step_badge.setContentsMargins(0, 0, 0, 0)
 
         hdr_title = QLabel("SCREW OPERATION")
         hdr_title.setStyleSheet(
-            "font-size:28px;font-weight:900;color:#FFFFFF;"
+            f"font-size:{_rf(28)}px;font-weight:900;color:#FFFFFF;"
             "letter-spacing:6px;font-family:Consolas;background:transparent;"
         )
 
@@ -2235,7 +2350,7 @@ class PipelineRunner:
         layout.addWidget(hdr_bar)
 
         sep = QWidget()
-        sep.setFixedHeight(2)
+        sep.setFixedHeight(_rs(2))
         sep.setStyleSheet("background:#00AAFF;")
         layout.addWidget(sep)
 
@@ -2332,11 +2447,39 @@ class PipelineRunner:
             warning_label.setStyleSheet(
                 "font-size:24px;font-weight:900;color:#FF3344;font-family:Consolas;letter-spacing:3px;"
             )
-            warning_label.setAlignment(Qt.AlignCenter)
+            warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             warning_layout.addWidget(warning_label)
             layout.addWidget(warning_frame)
 
         layout.addStretch(1)
+
+        # =========================
+        # INSTRUCTION LABEL
+        # =========================
+        instruction_text = (
+            f'PLEASE take {screw_count} pcs of {screw_type} x {screw_length}mm SCREW '
+            f'from the screw box !!!'
+        )
+
+        instruction_label = QLabel(instruction_text)
+        instruction_label.setWordWrap(True)
+        instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        instruction_label.setMinimumHeight(_rs(72))
+        instruction_label.setStyleSheet(f"""
+            QLabel {{
+                font-size:{_rf(20)}px;
+                font-weight:900;
+                color:#FFD166;
+                background-color:#1A1405;
+                border-top:1px solid #0E2A40;
+                border-bottom:1px solid #0E2A40;
+                border-left:4px solid #FFAA00;
+                padding:{_rs(14)}px {_rs(24)}px;
+                letter-spacing:1px;
+                font-family:Consolas;
+            }}
+        """)
+        layout.addWidget(instruction_label)
 
         # ✅ 先 connect signal，再 apply / predict，避免錯過 OK
         try:
@@ -2359,7 +2502,7 @@ class PipelineRunner:
 
         # ── Button footer ─────────────────────────────────────────────────
         btn_footer = QWidget()
-        btn_footer.setFixedHeight(100)
+        btn_footer.setMinimumHeight(_rs(100))
         btn_footer.setStyleSheet(
             "background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
             "stop:0 #0A1828,stop:1 #060C14);"
@@ -2370,7 +2513,7 @@ class PipelineRunner:
         btn_row.setSpacing(16)
 
         cancel_btn = QPushButton("✕  CANCEL")
-        cancel_btn.setFixedHeight(66)
+        cancel_btn.setMinimumHeight(_rs(66))
         cancel_btn.setStyleSheet("""
             QPushButton {
                 font-size: 22px; font-weight: 900;
@@ -2378,7 +2521,7 @@ class PipelineRunner:
                 color: #FF3344;
                 border: 1px solid #FF334455;
                 border-radius: 2px;
-                min-width: 200px;
+                min-width: {_rs(200)}px;
                 font-family: Consolas; letter-spacing: 2px;
             }
             QPushButton:hover {
@@ -2390,7 +2533,7 @@ class PipelineRunner:
         """)
 
         ok_btn = QPushButton("✓  OK  —  CONTINUE")
-        ok_btn.setFixedHeight(66)
+        ok_btn.setMinimumHeight(_rs(66))
         ok_btn.setStyleSheet("""
             QPushButton {
                 font-size: 22px; font-weight: 900;
@@ -2399,7 +2542,7 @@ class PipelineRunner:
                 border: none;
                 border-top: 2px solid #00FF88;
                 border-radius: 0px;
-                min-width: 320px;
+                min-width: {_rs(320)}px;
                 font-family: Consolas; letter-spacing: 3px;
             }
             QPushButton:hover { background-color: #052A18; color: #FFFFFF; }
@@ -2519,7 +2662,7 @@ class PipelineRunner:
         layout.addWidget(btn_footer)
 
         result = dialog.exec()
-        return result == QDialog.Accepted
+        return result == QDialog.DialogCode.Accepted
 
     @staticmethod
     def _resolve_block_id(block_data: Dict) -> str:
@@ -2547,39 +2690,39 @@ class PipelineRunner:
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        gen_hdr = QWidget(); gen_hdr.setFixedHeight(60)
+        gen_hdr = QWidget(); gen_hdr.setFixedHeight(_rs(60))
         gen_hdr.setStyleSheet("background:#050D18;border-bottom:2px solid #00AAFF;")
         gen_hdr_row = QHBoxLayout(gen_hdr); gen_hdr_row.setContentsMargins(14,0,14,0); gen_hdr_row.setSpacing(10)
         gen_badge = QLabel(f"STEP {step_number}/{total_steps}")
-        gen_badge.setStyleSheet("font-size:11px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:3px 10px;letter-spacing:3px;font-family:Consolas;")
+        gen_badge.setStyleSheet(f"font-size:{_rf(11)}px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:{_rs(3)}px {_rs(10)}px;letter-spacing:3px;font-family:Consolas;")
         gen_title = QLabel(block_name.upper())
-        gen_title.setStyleSheet("font-size:18px;font-weight:900;color:#FFFFFF;letter-spacing:3px;font-family:Consolas;background:transparent;")
+        gen_title.setStyleSheet(f"font-size:{_rf(18)}px;font-weight:900;color:#FFFFFF;letter-spacing:3px;font-family:Consolas;background:transparent;")
         gen_hdr_row.addWidget(gen_badge); gen_hdr_row.addWidget(gen_title); gen_hdr_row.addStretch()
         layout.addWidget(gen_hdr)
 
         info_label = QLabel(f"Executing: {block_name}\n\nStep {step_number} of {total_steps}")
-        info_label.setStyleSheet("font-size:20px;color:#CCDDEE;padding:28px 20px;background:#050D18;border:none;border-left:3px solid #00AAFF;font-family:Consolas;")
-        info_label.setAlignment(Qt.AlignCenter)
+        info_label.setStyleSheet(f"font-size:{_rf(20)}px;color:#CCDDEE;padding:{_rs(28)}px {_rs(20)}px;background:#050D18;border:none;border-left:{_rs(3)}px solid #00AAFF;font-family:Consolas;")
+        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
         ok_btn = QPushButton("▶  CONTINUE")
-        ok_btn.setFixedHeight(58)
+        ok_btn.setFixedHeight(_rs(58))
         ok_btn.setStyleSheet("""
             QPushButton {
-                font-size: 18px; font-weight: 800;
+                font-size: {_rf(18)}px; font-weight: 800;
                 background-color: #031A10; color: #00FF88;
-                border: 1px solid #0A5030; border-bottom: 5px solid #051008;
-                border-left: 3px solid #00FF88; border-radius: 2px;
+                border: 1px solid #0A5030; border-bottom: {_rs(5)}px solid #051008;
+                border-left: {_rs(3)}px solid #00FF88; border-radius: 2px;
                 margin-top: 12px; font-family: Consolas; letter-spacing: 1px;
             }
             QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
-            QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
+            QPushButton:pressed { border-bottom: {_rs(2)}px solid #051008; padding-top: {_rs(3)}px; }
         """)
         ok_btn.clicked.connect(dialog.accept)
         layout.addWidget(ok_btn)
 
-        return dialog.exec() == QDialog.Accepted
+        return dialog.exec() == QDialog.DialogCode.Accepted
 
     @staticmethod
     def get_pending_jobs(recipe_name: str) -> List[Dict]:
@@ -2861,19 +3004,19 @@ class PipelineRunner:
 
         # Tech header bar
         hdr_bar = QWidget()
-        hdr_bar.setFixedHeight(80)
+        hdr_bar.setFixedHeight(_rs(80))
         hdr_bar.setStyleSheet("background-color:#050D18;border-bottom:2px solid #00AAFF;")
         hdr_row = QHBoxLayout(hdr_bar)
         hdr_row.setContentsMargins(14, 0, 14, 0)
         hdr_row.setSpacing(12)
         asm_step_badge = QLabel(f"STEP {pipeline_step}/{pipeline_total}")
         asm_step_badge.setStyleSheet(
-            "font-size:16px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:4px 14px;letter-spacing:2px;font-family:Consolas;")
-        asm_step_badge.setFixedHeight(24)
+            f"font-size:{_rf(16)}px;font-weight:900;color:#00AAFF;background:#030810;border:1px solid #00AAFF44;padding:{_rs(4)}px {_rs(14)}px;letter-spacing:2px;font-family:Consolas;")
+        asm_step_badge.setFixedHeight(_rs(24))
         asm_step_badge.setContentsMargins(0, 0, 0, 0)
         asm_title = QLabel(product_name.upper())
         asm_title.setStyleSheet(
-            "font-size:26px;font-weight:900;color:#FFFFFF;letter-spacing:2px;font-family:Consolas;background:transparent;")
+            f"font-size:{_rf(26)}px;font-weight:900;color:#FFFFFF;letter-spacing:2px;font-family:Consolas;background:transparent;")
         hdr_row.addWidget(asm_step_badge)
         hdr_row.addWidget(asm_title)
         hdr_row.addStretch()
@@ -2881,7 +3024,7 @@ class PipelineRunner:
 
         # Cyan separator line
         sep_line = QWidget()
-        sep_line.setFixedHeight(2)
+        sep_line.setFixedHeight(_rs(2))
         sep_line.setStyleSheet("background:#00AAFF;")
         layout.addWidget(sep_line)
 
@@ -2890,7 +3033,7 @@ class PipelineRunner:
         sw_layout = QVBoxLayout(splitter_wrap)
         sw_layout.setContentsMargins(0, 0, 0, 0)
         sw_layout.setSpacing(0)
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setStyleSheet("QSplitter::handle { background-color: #0E2A40; width:2px; }")
         sw_layout.addWidget(splitter)
 
@@ -2901,7 +3044,7 @@ class PipelineRunner:
         left_layout.setContentsMargins(0, 0, 0, 0)
 
         ref_header = QWidget()
-        ref_header.setFixedHeight(44)
+        ref_header.setFixedHeight(_rs(44))
         ref_header.setStyleSheet("background:#050D18;border-bottom:1px solid #0E2A40;border-right:1px solid #0E2A40;")
         rh_row = QHBoxLayout(ref_header)
         rh_row.setContentsMargins(10, 0, 10, 0)
@@ -2917,17 +3060,17 @@ class PipelineRunner:
         left_layout.addWidget(ref_header)
 
         ref_image_label = QLabel()
-        ref_image_label.setAlignment(Qt.AlignCenter)
+        ref_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ref_image_label.setMinimumHeight(450)
         ref_image_label.setStyleSheet("QLabel { border:none; background-color:#030810; padding:4px; }")
         if reference_image_path and os.path.exists(reference_image_path):
             pixmap = QPixmap(reference_image_path)
             if not pixmap.isNull():
-                ref_image_label.setPixmap(pixmap.scaled(550, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                ref_image_label.setPixmap(pixmap.scaled(550, 450, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         else:
             ref_image_label.setText(f"⚠ Product image not found\n\n{product_name}")
             ref_image_label.setStyleSheet(
-                "color: #FFAA00; font-size: 18px; font-family: Consolas; background-color: #0A0800; border: 1px solid #553300; border-left: 3px solid #FFAA00; padding: 20px;")
+                "color: #FFAA00; font-size: {_rf(18)}px; font-family: Consolas; background-color: #0A0800; border: 1px solid #553300; border-left: 3px solid #FFAA00; padding: {_rs(20)}px;")
         left_layout.addWidget(ref_image_label, stretch=1)
 
         # ===== INDUSTRIAL OK / NG OVERLAY =====
@@ -2939,7 +3082,7 @@ class PipelineRunner:
         """)
 
         status_overlay = QLabel(left_widget)
-        status_overlay.setAlignment(Qt.AlignCenter)
+        status_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         status_overlay.setVisible(False)
         status_overlay.setText("")
         status_overlay.raise_()
@@ -3003,7 +3146,7 @@ class PipelineRunner:
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         det_panel_hdr = QWidget()
-        det_panel_hdr.setFixedHeight(44)
+        det_panel_hdr.setFixedHeight(_rs(44))
         det_panel_hdr.setStyleSheet("background:#050D18;border-bottom:1px solid #0E2A40;")
         dph_row = QHBoxLayout(det_panel_hdr)
         dph_row.setContentsMargins(10, 0, 10, 0)
@@ -3028,7 +3171,7 @@ class PipelineRunner:
         loading_layout = QVBoxLayout(loading_widget)
 
         loading_label = QLabel()
-        loading_label.setAlignment(Qt.AlignCenter)
+        loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         loading_label.setMinimumHeight(200)
         loading_label.setText("⏳ Processing...")
         loading_label.setStyleSheet("""
@@ -3052,7 +3195,7 @@ class PipelineRunner:
         loading_layout.addWidget(loading_label)
 
         loading_message = QLabel("Capturing image and running AI detection...")
-        loading_message.setAlignment(Qt.AlignCenter)
+        loading_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         loading_message.setStyleSheet(
             "font-size: 16px; color: #7AAAD4; margin-top: 20px; font-family: Consolas; background-color: transparent;")
         loading_layout.addWidget(loading_message)
@@ -3067,14 +3210,15 @@ class PipelineRunner:
             }
             QProgressBar::chunk { background-color: #00AAFF; border-radius: 0px; }
         """)
-        loading_layout.addWidget(progress_bar, alignment=Qt.AlignCenter)
+        loading_layout.addWidget(progress_bar, alignment=Qt.AlignmentFlag.AlignCenter)
         detection_container_layout.addWidget(loading_widget)
 
         detection_label = QLabel()
-        detection_label.setAlignment(Qt.AlignCenter)
+        detection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         detection_label.setVisible(False)
         detection_label.setStyleSheet("background-color: transparent;")
-        detection_label.setFixedSize(1280, 720)
+        detection_label.setMinimumSize(_rs(640), _rs(360))
+        detection_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         detection_container_layout.addWidget(detection_label)
         right_layout.addWidget(detection_container, stretch=1)
 
@@ -3094,24 +3238,24 @@ class PipelineRunner:
 
         splitter.addWidget(left_widget)
         splitter.addWidget(right_widget)
-        splitter.setSizes([550, 550])
+        splitter.setSizes([350, 900])
         layout.addWidget(splitter_wrap, stretch=1)
 
         # Buttons
         button_layout = QHBoxLayout()
 
         cancel_btn = QPushButton("✕  CANCEL")
-        cancel_btn.setFixedHeight(58)
+        cancel_btn.setFixedHeight(_rs(58))
         cancel_btn.setStyleSheet("""
             QPushButton {
-                font-size: 16px; font-weight: 800;
+                font-size: {_rf(16)}px; font-weight: 800;
                 background-color: #1A0508; color: #FF3344;
                 border: 1px solid #661020; border-bottom: 5px solid #440010;
-                border-left: 3px solid #FF3344; border-radius: 2px;
+                border-left: {_rs(3)}px solid #FF3344; border-radius: {_rs(2)}px;
                 min-width: 160px; font-family: Consolas; letter-spacing: 1px;
             }
             QPushButton:hover { background-color: #220810; color: #FFFFFF; border-color: #FF3344; }
-            QPushButton:pressed { border-bottom: 2px solid #440010; padding-top: 3px; }
+            QPushButton:pressed { border-bottom: 2px solid #440010; padding-top: {_rs(3)}px; }
         """)
 
         def cleanup_capture_runner():
@@ -3134,25 +3278,25 @@ class PipelineRunner:
         cancel_btn.clicked.connect(on_cancel)
 
         retry_btn = QPushButton("↺  RETRY")
-        retry_btn.setFixedHeight(58)
+        retry_btn.setFixedHeight(_rs(58))
         retry_btn.setStyleSheet("""
             QPushButton {
-                font-size: 16px; font-weight: 800;
+                font-size: {_rf(16)}px; font-weight: 800;
                 background-color: #1A1000; color: #FFAA00;
                 border: 1px solid #553300; border-bottom: 5px solid #331A00;
                 border-left: 3px solid #FFAA00; border-radius: 2px;
-                min-width: 200px; font-family: Consolas; letter-spacing: 1px;
+                min-width: {_rs(200)}px; font-family: Consolas; letter-spacing: 1px;
             }
             QPushButton:hover { background-color: #221400; color: #FFFFFF; border-color: #FFAA00; }
-            QPushButton:pressed { border-bottom: 2px solid #331A00; padding-top: 3px; }
+            QPushButton:pressed { border-bottom: 2px solid #331A00; padding-top: {_rs(3)}px; }
         """)
         retry_btn.setEnabled(False)
 
         verify_btn = QPushButton("✓  VERIFY & CONTINUE")
-        verify_btn.setFixedHeight(58)
+        verify_btn.setFixedHeight(_rs(58))
         verify_btn.setStyleSheet("""
             QPushButton {
-                font-size: 16px; font-weight: 800;
+                font-size: {_rf(16)}px; font-weight: 800;
                 background-color: #0A1C0A; color: #2A4A2A;
                 border: 1px solid #1A3A1A; border-bottom: 5px solid #050A05;
                 border-left: 3px solid #1A3A1A; border-radius: 2px;
@@ -3160,15 +3304,15 @@ class PipelineRunner:
             }
             QPushButton:enabled {
                 background-color: #031A10; color: #00FF88;
-                border-color: #0A5030; border-left: 3px solid #00FF88;
+                border-color: #0A5030; border-left: {_rs(3)}px solid #00FF88;
             }
             QPushButton:enabled:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
-            QPushButton:enabled:pressed { border-bottom: 2px solid #0A5030; padding-top: 3px; }
+            QPushButton:enabled:pressed { border-bottom: 2px solid #0A5030; padding-top: {_rs(3)}px; }
         """)
         verify_btn.setEnabled(False)
 
         btn_wrap = QWidget()
-        btn_wrap.setFixedHeight(66)
+        btn_wrap.setMinimumHeight(_rs(66))
         btn_wrap.setStyleSheet("background:#030810;border-top:1px solid #0E2A40;")
         bwl = QHBoxLayout(btn_wrap)
         bwl.setContentsMargins(10, 8, 10, 8)
@@ -3217,7 +3361,7 @@ class PipelineRunner:
             target_size = detection_container.size() - QSize(20, 20)
             if target_size.width() < 100 or target_size.height() < 100:
                 target_size = QSize(700, 450)
-            detection_label.setPixmap(pixmap.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            detection_label.setPixmap(pixmap.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
         def _set_detection_header(text, color, bg):
             detection_header.setText(text)
@@ -3238,7 +3382,7 @@ class PipelineRunner:
                     w,
                     h,
                     rgb.strides[0],
-                    QImage.Format_RGB888
+                    QImage.Format.Format_RGB888
                 ).copy()
 
                 pixmap = QPixmap.fromImage(qimg)
@@ -3247,12 +3391,12 @@ class PipelineRunner:
 
                 scaled = pixmap.scaled(
                     1280, 720,
-                    Qt.KeepAspectRatio,
-                    Qt.FastTransformation
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.FastTransformation
                 )
 
                 detection_label.setPixmap(scaled)
-                detection_label.setAlignment(Qt.AlignCenter)
+                detection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             except Exception as e:
                 detection_status.setText(f"❌ Live error: {str(e)[:60]}")
@@ -3926,7 +4070,7 @@ class PipelineRunner:
                 saved_layout.setSpacing(12)
 
                 saved_header_widget = QWidget()
-                saved_header_widget.setFixedHeight(80)
+                saved_header_widget.setFixedHeight(_rs(80))
                 saved_header_widget.setStyleSheet("background:#050D18;border-bottom:2px solid #00AAFF;")
                 saved_header_layout = QHBoxLayout(saved_header_widget)
                 saved_header_layout.setContentsMargins(14, 0, 14, 0)
@@ -3946,10 +4090,10 @@ class PipelineRunner:
                 cached_pixmap = None
                 pixmap = QPixmap(image_to_show)
                 if not pixmap.isNull():
-                    cached_pixmap = pixmap.scaled(700, 450, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    cached_pixmap = pixmap.scaled(700, 450, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
                 if has_video:
-                    splitter_result = QSplitter(Qt.Horizontal)
+                    splitter_result = QSplitter(Qt.Orientation.Horizontal)
                     splitter_result.setHandleWidth(2)
                     splitter_result.setStyleSheet("QSplitter::handle { background-color: #1A3A5C; }")
 
@@ -3959,9 +4103,9 @@ class PipelineRunner:
                     left_result_layout.setContentsMargins(8, 8, 8, 8)
 
                     image_title = QLabel("ASSEMBLY IMAGE")
-                    image_title.setAlignment(Qt.AlignCenter)
+                    image_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     image_title.setStyleSheet(
-                        "font-size:10px;font-weight:900;color:#2A5A7A;background:#050D18;border-bottom:1px solid #0E2A40;padding:8px 12px;font-family:Consolas;letter-spacing:3px;")
+                        "font-size:20px;font-weight:900;color:#2A5A7A;background:#050D18;border-bottom:1px solid #0E2A40;padding:8px 12px;font-family:Consolas;letter-spacing:3px;")
                     left_result_layout.addWidget(image_title)
 
                     image_frame = QFrame()
@@ -3972,7 +4116,7 @@ class PipelineRunner:
                     image_frame_layout.setContentsMargins(8, 8, 8, 8)
 
                     saved_image_label = QLabel()
-                    saved_image_label.setAlignment(Qt.AlignCenter)
+                    saved_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     saved_image_label.setMinimumSize(560, 460)
                     saved_image_label.setStyleSheet("background-color: #030810; border: none;")
                     if cached_pixmap:
@@ -3988,27 +4132,27 @@ class PipelineRunner:
                     right_result_layout.setContentsMargins(8, 8, 8, 8)
 
                     video_title = QLabel("UPLOADED VIDEO")
-                    video_title.setAlignment(Qt.AlignCenter)
+                    video_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     video_title.setStyleSheet(
-                        "font-size:10px;font-weight:900;color:#2A5A7A;background:#050D18;border-bottom:1px solid #0E2A40;padding:8px 12px;font-family:Consolas;letter-spacing:3px;")
+                        "font-size:20px;font-weight:900;color:#2A5A7A;background:#050D18;border-bottom:1px solid #0E2A40;padding:8px 12px;font-family:Consolas;letter-spacing:3px;")
                     right_result_layout.addWidget(video_title)
 
                     video_frame = QFrame()
                     video_frame.setMinimumSize(760, 560)
                     video_frame.setStyleSheet(
-                        "QFrame { border: 1px solid #1A3A5C; border-left: 3px solid #00FF88; border-radius: 0px; background-color: #030810; }")
+                        "QFrame { border: 1px solid #1A3A5C; border-left: {_rs(3)}px solid #00FF88; border-radius: 0px; background-color: #030810; }")
                     video_frame_layout = QVBoxLayout(video_frame)
                     video_frame_layout.setContentsMargins(8, 8, 8, 8)
 
                     video_widget = QVideoWidget()
                     video_widget.setMinimumSize(720, 520)
                     video_widget.setStyleSheet("background-color: #030810;")
-                    video_info = QLabel(os.path.basename(uploaded_video_path))
-                    video_info.setAlignment(Qt.AlignCenter)
-                    video_info.setStyleSheet(
-                        "font-size: 13px; color: #7AAAD4; padding: 6px 10px; background-color: #050D18; border-radius: 0px; font-family: Consolas;")
+                    video_widget = QVideoWidget()
+                    video_widget.setMinimumSize(720, 520)
+                    video_widget.setStyleSheet("background-color: #030810;")
+
                     video_frame_layout.addWidget(video_widget, 1)
-                    video_frame_layout.addWidget(video_info, 0)
+                    # video_frame_layout.addWidget(video_info, 0)
                     right_result_layout.addWidget(video_frame, 1)
 
                     splitter_result.addWidget(left_result_widget)
@@ -4026,7 +4170,7 @@ class PipelineRunner:
 
                         def loop_uploaded_video(status):
                             from PySide6.QtMultimedia import QMediaPlayer
-                            if status == QMediaPlayer.EndOfMedia:
+                            if status == QMediaPlayer.MediaStatus.EndOfMedia:
                                 player.setPosition(0)
                                 player.play()
 
@@ -4038,7 +4182,7 @@ class PipelineRunner:
 
                 else:
                     saved_image_label = QLabel()
-                    saved_image_label.setAlignment(Qt.AlignCenter)
+                    saved_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     saved_image_label.setMinimumHeight(400)
                     saved_image_label.setStyleSheet(
                         "border: 1px solid #1A3A5C; border-left: 3px solid #00AAFF; border-radius: 0px; background-color: #030810; padding: 10px;")
@@ -4049,30 +4193,26 @@ class PipelineRunner:
                     saved_layout.addWidget(saved_image_label)
 
                 if coordinates_sent:
-                    coord_display = QLabel(f"COORDINATES SENT:\n{coord_string}")
-                    coord_display.setStyleSheet(
-                        "font-size: 13px; color: #00AAFF; padding: 10px 14px; background-color: #050D18; border: 1px solid #1A3A5C; border-left: 3px solid #00AAFF; border-radius: 0px; margin: 5px; font-family: Consolas;")
-                    coord_display.setWordWrap(True)
-                    saved_layout.addWidget(coord_display)
+                    pass
 
                 btn_container = QWidget()
-                btn_container.setFixedHeight(100)
+                btn_container.setMinimumHeight(_rs(100))
                 btn_container.setStyleSheet("background: transparent;")
                 btn_layout = QHBoxLayout(btn_container)
                 btn_layout.setContentsMargins(20, 10, 20, 10)
 
                 close_btn = QPushButton("▶  CONTINUE")
-                close_btn.setFixedHeight(66)
+                close_btn.setMinimumHeight(_rs(66))
                 close_btn.setStyleSheet("""
                             QPushButton {
                                 font-size: 20px; font-weight: 800;
                                 background-color: #031A10; color: #00FF88;
-                                border: 1px solid #0A5030; border-bottom: 5px solid #051008;
-                                border-left: 3px solid #00FF88; border-radius: 2px;
-                                min-width: 320px; font-family: Consolas; letter-spacing: 2px;
+                                border: 1px solid #0A5030; border-bottom: {_rs(5)}px solid #051008;
+                                border-left: {_rs(3)}px solid #00FF88; border-radius: 2px;
+                                min-width: {_rs(320)}px; font-family: Consolas; letter-spacing: 2px;
                             }
                             QPushButton:hover { background-color: #052A18; color: #FFFFFF; border-color: #00FF88; }
-                            QPushButton:pressed { border-bottom: 2px solid #051008; padding-top: 3px; }
+                            QPushButton:pressed { border-bottom: {_rs(2)}px solid #051008; padding-top: {_rs(3)}px; }
                         """)
 
                 btn_layout.addStretch()
@@ -4198,7 +4338,7 @@ class PipelineRunner:
             result = dialog.exec()
             if PipelineRunner._heartbeat_manager is not None:
                 PipelineRunner._heartbeat_reference_count -= 1
-            return result == QDialog.Accepted
+            return result == QDialog.DialogCode.Accepted
         except Exception as e:
             if PipelineRunner._heartbeat_manager is not None:
                 PipelineRunner._heartbeat_reference_count -= 1
@@ -4374,4 +4514,77 @@ class PipelineRunner:
 
     @staticmethod
     def is_stop_ack_reply(reply: str) -> bool:
-        return str(reply).strip().upper() == "OK,STOP"
+        try:
+            text = str(reply).replace("\r", "\n").upper()
+            parts = [p.strip() for p in text.split("\n") if p.strip()]
+            return "OK,STOP" in parts or "OK,STOP" in text
+        except Exception:
+            return False
+
+    @staticmethod
+    def _clear_screw_socket_buffer():
+        sock = PipelineRunner._screw_socket
+        if not sock:
+            return
+        try:
+            sock.setblocking(False)
+            while True:
+                data = sock.recv(1024)
+                if not data:
+                    break
+                print(f"[SCREW TCP] (cleared) {data}")
+        except BlockingIOError:
+            pass
+        except Exception as e:
+            print(f"[SCREW TCP] clear buffer error: {e}")
+        finally:
+            sock.setblocking(True)
+
+    @staticmethod
+    def _read_screw_tcp_messages(timeout_sec=0.05):
+        sock = getattr(PipelineRunner, "_screw_socket", None)
+        if not sock:
+            return []
+
+        messages = []
+
+        try:
+            sock.settimeout(timeout_sec)
+
+            data = b""
+            while True:
+                try:
+                    chunk = sock.recv(1024)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if len(chunk) < 1024:
+                        break
+                except socket.timeout:
+                    break
+
+            if not data:
+                return []
+
+            text = data.decode(errors="ignore")
+            print(f"[SCREW TCP RAW] ← {text}")
+
+            text = text.replace("\r", "\n")
+            text = text.replace("OK,STOP", "\nOK,STOP\n")
+            text = text.replace("ERROR,WRONG_SCREW", "\nERROR,WRONG_SCREW\n")
+            text = text.replace("ERROR,STOP_FAILED", "\nERROR,STOP_FAILED\n")
+            text = text.replace("OK,RECIPE_LOADED", "\nOK,RECIPE_LOADED\n")
+            text = text.replace("INFO,SCREWDRIVER_CONNECTED", "\nINFO,SCREWDRIVER_CONNECTED\n")
+            text = text.replace("INFO,SELECTOR_CONNECTED", "\nINFO,SELECTOR_CONNECTED\n")
+
+            parts = [p.strip().upper() for p in text.split("\n") if p.strip()]
+            messages.extend(parts)
+
+        except Exception as e:
+            print(f"[SCREW TCP] read error: {e}")
+
+        return messages
+
+    @staticmethod
+    def _is_stop_ack(msg: str) -> bool:
+        return "OK,STOP" in msg

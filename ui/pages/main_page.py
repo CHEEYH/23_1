@@ -68,6 +68,29 @@ C = {
 }
 
 
+def _screen_scale():
+    try:
+        screen = QApplication.primaryScreen()
+        if screen:
+            geo = screen.availableGeometry()
+            sw = max(1, geo.width())
+            sh = max(1, geo.height())
+        else:
+            sw, sh = 1920, 1080
+    except Exception:
+        sw, sh = 1920, 1080
+
+    return max(0.72, min(1.30, min(sw / 1920.0, sh / 1080.0)))
+
+
+def _rs(v: int) -> int:
+    return max(1, int(v * _screen_scale()))
+
+
+def _rf(v: int) -> int:
+    return max(8, int(v * _screen_scale()))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  QR Worker
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,135 +157,140 @@ class QRScanDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Barcode Verification")
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setMinimumWidth(820)
-        self.setMinimumHeight(700)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setModal(True)
-        self.setStyleSheet("QDialog { background-color: #070E18; border: 2px solid #00AAFF; }")
+        self.resize(_rs(980), _rs(760))
+        self.setMinimumSize(_rs(640), _rs(520))
+        self.setStyleSheet(f"QDialog {{ background-color: #070E18; border: {_rs(2)}px solid #00AAFF; }}")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Header
         hdr = QFrame()
-        hdr.setFixedHeight(80)
+        hdr.setFixedHeight(_rs(80))
         hdr.setStyleSheet(f"QFrame {{ background-color: {C['bg0']}; border-bottom: 1px solid {C['border0']}; }}")
         hdr_row = QHBoxLayout(hdr)
-        hdr_row.setContentsMargins(22, 0, 22, 0)
+        hdr_row.setContentsMargins(_rs(22), 0, _rs(22), 0)
         icon = QLabel("▣")
-        icon.setStyleSheet(f"color: {C['cyan']}; font-size: 26px; background: transparent;")
+        icon.setStyleSheet(f"color: {C['cyan']}; font-size: {_rf(26)}px; background: transparent;")
         title = QLabel("BARCODE VERIFICATION")
         title.setStyleSheet(
-            f"color: #FFFFFF; font-size: 26px; font-weight: 700; "
-            f"letter-spacing: 2px; font-family: Consolas; background: transparent;"
+            f"color: #FFFFFF; font-size: {_rf(26)}px; font-weight: 700; "
+            f"letter-spacing: {_rs(2)}px; font-family: Consolas; background: transparent;"
         )
-        hdr_row.addWidget(icon);
-        hdr_row.addSpacing(12);
-        hdr_row.addWidget(title);
+        hdr_row.addWidget(icon)
+        hdr_row.addSpacing(_rs(12))
+        hdr_row.addWidget(title)
         hdr_row.addStretch()
         root.addWidget(hdr)
 
-        # Body
         body = QWidget()
         body.setStyleSheet(f"background-color: {C['bg1']};")
         bl = QVBoxLayout(body)
-        bl.setContentsMargins(26, 20, 26, 24)
-        bl.setSpacing(14)
+        bl.setContentsMargins(_rs(26), _rs(20), _rs(26), _rs(24))
+        bl.setSpacing(_rs(14))
 
-        # Status row — no frame, no dot, just clean text
-        self.pulse_dot = QLabel("")  # kept for compatibility, hidden
+        self.pulse_dot = QLabel("")
         self.pulse_dot.hide()
         self.status_label = QLabel("Initialising…")
         self.status_label.setStyleSheet(
-            "color: #00AAFF; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
+            f"color: #00AAFF; font-size: {_rf(26)}px; font-weight: 700; font-family: Consolas; background: transparent;")
         bl.addWidget(self.status_label)
 
         out_lbl = QLabel("SCAN OUTPUT")
         out_lbl.setStyleSheet(
-            f"color: #AACCEE; font-size: 26px; font-weight: 700; letter-spacing: 2px; background: transparent;")
+            f"color: #AACCEE; font-size: {_rf(26)}px; font-weight: 700; letter-spacing: {_rs(2)}px; background: transparent;")
         bl.addWidget(out_lbl)
 
         self.result_box = QTextEdit()
         self.result_box.setReadOnly(True)
         self.result_box.setPlaceholderText("Awaiting barcode data…")
+        self.result_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.result_box.setStyleSheet(f"""
             QTextEdit {{
                 background-color: {C['bg0']}; color: {C['green']};
-                border: 1px solid {C['border0']}; border-radius: 8px;
-                padding: 18px; font-size: 22px;
+                border: 1px solid {C['border0']}; border-radius: {_rs(8)}px;
+                padding: {_rs(18)}px; font-size: {_rf(22)}px;
                 line-height: 1.8;
                 font-family: Consolas, 'Courier New', monospace;
             }}
-            QScrollBar:vertical {{ background: {C['bg0']}; width: 6px; border: none; }}
-            QScrollBar::handle:vertical {{ background: {C['border_hi']}; border-radius: 3px; }}
+            QScrollBar:vertical {{ background: {C['bg0']}; width: {_rs(6)}px; border: none; }}
+            QScrollBar::handle:vertical {{ background: {C['border_hi']}; border-radius: {_rs(3)}px; }}
         """)
-        bl.addWidget(self.result_box)
+        bl.addWidget(self.result_box, 1)
 
-        btn_row = QHBoxLayout();
+        btn_row = QHBoxLayout()
         btn_row.addStretch()
         self.confirm_btn = QPushButton("Confirm")
-        self.confirm_btn.setFixedSize(220, 70)
-        self.confirm_btn.setStyleSheet("""
-            QPushButton {
+        self.confirm_btn.setMinimumSize(_rs(180), _rs(60))
+        self.confirm_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.confirm_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #004D28;
                 color: #FFFFFF;
-                border: 3px solid #00AA55;
-                border-bottom: 6px solid #006633;
-                border-radius: 10px;
-                font-size: 26px; font-weight: 800;
-            }
-            QPushButton:hover {
+                border: {_rs(3)}px solid #00AA55;
+                border-bottom: {_rs(6)}px solid #006633;
+                border-radius: {_rs(10)}px;
+                font-size: {_rf(26)}px; font-weight: 800;
+                padding: {_rs(10)}px {_rs(16)}px;
+            }}
+            QPushButton:hover {{
                 background-color: #006633;
                 border-color: #00FF88;
                 color: #FFFFFF;
-            }
-            QPushButton:pressed {
-                border-bottom: 3px solid #006633;
-                padding-top: 3px;
-            }
-            QPushButton:disabled {
+            }}
+            QPushButton:pressed {{
+                border-bottom: {_rs(3)}px solid #006633;
+                padding-top: {_rs(3)}px;
+            }}
+            QPushButton:disabled {{
                 background-color: #0A1A12;
                 color: #2A4A36;
-                border: 3px solid #1A3A28;
-                border-bottom: 6px solid #102A1C;
-            }
+                border: {_rs(3)}px solid #1A3A28;
+                border-bottom: {_rs(6)}px solid #102A1C;
+            }}
         """)
-        btn_row.addWidget(self.confirm_btn);
-        btn_row.addSpacing(10)
+        btn_row.addWidget(self.confirm_btn)
+        btn_row.addSpacing(_rs(10))
+
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setFixedSize(220, 70)
-        self.cancel_btn.setStyleSheet("""
-            QPushButton {
+        self.cancel_btn.setMinimumSize(_rs(180), _rs(60))
+        self.cancel_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.cancel_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #4A0A14;
                 color: #FFFFFF;
-                border: 3px solid #CC2233;
-                border-bottom: 6px solid #880018;
-                border-radius: 10px;
-                font-size: 26px; font-weight: 800;
-            }
-            QPushButton:hover {
+                border: {_rs(3)}px solid #CC2233;
+                border-bottom: {_rs(6)}px solid #880018;
+                border-radius: {_rs(10)}px;
+                font-size: {_rf(26)}px; font-weight: 800;
+                padding: {_rs(10)}px {_rs(16)}px;
+            }}
+            QPushButton:hover {{
                 background-color: #5A0E18;
                 border-color: #FF4455;
                 color: #FFFFFF;
-            }
-            QPushButton:pressed {
-                border-bottom: 3px solid #880018;
-                padding-top: 3px;
-            }
+            }}
+            QPushButton:pressed {{
+                border-bottom: {_rs(3)}px solid #880018;
+                padding-top: {_rs(3)}px;
+            }}
         """)
         btn_row.addWidget(self.cancel_btn)
         bl.addLayout(btn_row)
-        root.addWidget(body)
+        root.addWidget(body, 1)
 
 class HoldProgressRing(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(220, 220)
+        self.base_size = 220
         self.elapsed = 0.0
-        self.mode = "waiting"   # waiting / continue / stop / triggered
+        self.mode = "waiting"
         self.top_text = "WAITING"
         self.bottom_text = "FOR HAND"
+        self.setMinimumSize(_rs(160), _rs(160))
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def set_state(self, elapsed: float, mode: str, top_text: str, bottom_text: str):
         self.elapsed = max(0.0, elapsed)
@@ -271,18 +299,25 @@ class HoldProgressRing(QWidget):
         self.bottom_text = bottom_text
         self.update()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        rect = self.rect().adjusted(12, 12, -12, -12)
+        side = min(self.width(), self.height())
+        margin = max(8, side // 18)
+        rect = self.rect().adjusted(margin, margin, -margin, -margin)
 
-        # Background ring
-        bg_pen = QPen(QColor("#1E2A36"), 12)
+        bg_pen_width = max(8, side // 18)
+        fg_pen_width = bg_pen_width
+
+        bg_pen = QPen(QColor("#1E2A36"), bg_pen_width)
         painter.setPen(bg_pen)
         painter.drawArc(rect, 0, 360 * 16)
 
-        # Foreground ring
         progress = 0.0
         color = QColor("#00AAFF")
 
@@ -299,21 +334,18 @@ class HoldProgressRing(QWidget):
             progress = 0.0
             color = QColor("#6699BB")
 
-        fg_pen = QPen(color, 12)
+        fg_pen = QPen(color, fg_pen_width)
         painter.setPen(fg_pen)
-        # Start from top (90 deg), clockwise negative
         painter.drawArc(rect, 90 * 16, int(-360 * progress * 16))
 
-        # Center text
         painter.setPen(QColor("#FFFFFF"))
-
-        font1 = QFont("Consolas", 18, QFont.Bold)
+        font1 = QFont("Consolas", max(10, side // 12), QFont.Bold)
         painter.setFont(font1)
-        painter.drawText(self.rect().adjusted(0, 55, 0, 0), Qt.AlignHCenter, self.top_text)
+        painter.drawText(self.rect().adjusted(0, side // 4, 0, 0), Qt.AlignHCenter, self.top_text)
 
-        font2 = QFont("Consolas", 15, QFont.Bold)
+        font2 = QFont("Consolas", max(9, side // 15), QFont.Bold)
         painter.setFont(font2)
-        painter.drawText(self.rect().adjusted(0, 105, 0, 0), Qt.AlignHCenter, self.bottom_text)
+        painter.drawText(self.rect().adjusted(0, side // 2 - side // 14, 0, 0), Qt.AlignHCenter, self.bottom_text)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -395,18 +427,18 @@ class MainPage(QWidget):
                 background-color: {C['bg2']};
                 color: #FFFFFF;
                 font-family: 'Segoe UI';
-                font-size: 26px;
+                font-size: {_rf(26)}px;
             }}
             QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
-            QScrollBar:vertical {{ background: {C['bg0']}; width: 7px; border: none; }}
-            QScrollBar::handle:vertical {{ background: {C['border_hi']}; border-radius: 3px; min-height: 20px; }}
+            QScrollBar:vertical {{ background: {C['bg0']}; width: {_rs(7)}px; border: none; }}
+            QScrollBar::handle:vertical {{ background: {C['border_hi']}; border-radius: {_rs(3)}px; min-height: {_rs(20)}px; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
             QToolTip {{
                 background: {C['bg1']}; color: #FFFFFF;
-                border: 1px solid {C['border_hi']}; padding: 6px 12px; font-size: 25px;
+                border: 1px solid {C['border_hi']}; padding: {_rs(6)}px {_rs(12)}px; font-size: {_rf(25)}px;
             }}
             QMessageBox, QDialog {{ background-color: {C['bg1']}; }}
-            QMessageBox QLabel {{ color: #FFFFFF; font-size: 26px; }}
+            QMessageBox QLabel {{ color: #FFFFFF; font-size: {_rf(26)}px; }}
         """)
 
     def _apply_host_theme(self):
@@ -430,10 +462,10 @@ class MainPage(QWidget):
         lbl = QLabel(text)
         lbl.setStyleSheet(
             f"color: {color}; background-color: {bg}; border: 1px solid {border}; "
-            f"border-radius: 12px; padding: 5px 16px; "
-            f"font-size: 26px; font-weight: 700; letter-spacing: 0.5px;"
+            f"border-radius: {_rs(12)}px; padding: {_rs(5)}px {_rs(16)}px; "
+            f"font-size: {_rf(26)}px; font-weight: 700; letter-spacing: 0.5px;"
         )
-        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return lbl
 
     @staticmethod
@@ -441,7 +473,7 @@ class MainPage(QWidget):
         """Bright enough to actually read — not nearly-invisible."""
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            "color: #FFFFFF; font-size: 22px; font-weight: 800; letter-spacing: 3px; font-family: Consolas;"
+            "color: #FFFFFF; font-size: {_rf(22)}px; font-weight: 800; letter-spacing: 3px; font-family: Consolas;"
         )
         return lbl
 
@@ -467,10 +499,10 @@ class MainPage(QWidget):
                 background-color: #042A14;
                 color: #00FF88;
                 border: 1px solid #00AA55;
-                border-bottom: 5px solid #007A3D;
-                border-left: 3px solid #00FF88;
+                border-bottom: {_rs(5)}px solid #007A3D;
+                border-left: {_rs(3)}px solid #00FF88;
                 border-radius: 2px;
-                font-size: 30px; font-weight: 800;
+                font-size: {_rf(30)}px; font-weight: 800;
                 letter-spacing: 1px;
             }}
             QPushButton:hover {{
@@ -480,14 +512,14 @@ class MainPage(QWidget):
             }}
             QPushButton:pressed {{
                 background-color: #021A0A;
-                border-bottom: 3px solid #007A3D;
-                padding-top: 3px;
+                border-bottom: {_rs(3)}px solid #007A3D;
+                padding-top: {_rs(3)}px;
             }}
             QPushButton:disabled {{
                 background-color: #0A1A12;
                 color: #2A4A36;
-                border: 3px solid #1A3A28;
-                border-bottom: 6px solid #102A1C;
+                border: {_rs(3)}px solid #1A3A28;
+                border-bottom: {_rs(6)}px solid #102A1C;
             }}
         """
 
@@ -498,10 +530,10 @@ class MainPage(QWidget):
                 background-color: #050D1E;
                 color: #00AAFF;
                 border: 1px solid #1A5080;
-                border-bottom: 5px solid #0A2A50;
-                border-left: 3px solid #00AAFF;
+                border-bottom: {_rs(5)}px solid #0A2A50;
+                border-left: {_rs(3)}px solid #00AAFF;
                 border-radius: 2px;
-                font-size: 26px; font-weight: 700;
+                font-size: {_rf(26)}px; font-weight: 700;
             }}
             QPushButton:hover {{
                 background-color: #081828;
@@ -510,14 +542,14 @@ class MainPage(QWidget):
             }}
             QPushButton:pressed {{
                 background-color: #061825;
-                border-bottom: 3px solid #0E4070;
-                padding-top: 3px;
+                border-bottom: {_rs(3)}px solid #0E4070;
+                padding-top: {_rs(3)}px;
             }}
             QPushButton:disabled {{
                 background-color: {C['bg0']};
                 color: {C['dim_text']};
-                border: 3px solid {C['border0']};
-                border-bottom: 6px solid {C['border1']};
+                border: {_rs(3)}px solid {C['border0']};
+                border-bottom: {_rs(6)}px solid {C['border1']};
             }}
         """
 
@@ -530,20 +562,20 @@ class MainPage(QWidget):
 
         # ── TOP BAR ────────────────────────────────────────────────────────
         topbar = QFrame()
-        topbar.setFixedHeight(130)
+        topbar.setFixedHeight(_rs(130))
         topbar.setStyleSheet("""
             QFrame {
                 background-color: #070E18;
-                border-bottom: 2px solid #00AAFF;
+                border-bottom: {_rs(2)}px solid #00AAFF;
             }
         """)
         tb = QHBoxLayout(topbar)
-        tb.setContentsMargins(28, 0, 28, 0)
-        tb.setSpacing(20)
+        tb.setContentsMargins(_rs(28), 0, _rs(28), 0)
+        tb.setSpacing(_rs(20))
 
         # Icon box
         icon_box = QFrame()
-        icon_box.setFixedSize(72, 72)
+        icon_box.setFixedSize(_rs(72), _rs(72))
         icon_box.setStyleSheet("""
             QFrame {
                 background-color: #050D1E;
@@ -554,17 +586,17 @@ class MainPage(QWidget):
         ib = QHBoxLayout(icon_box);
         ib.setContentsMargins(0, 0, 0, 0)
         ico = QLabel("⚙");
-        ico.setAlignment(Qt.AlignCenter)
-        ico.setStyleSheet(f"color: {C['cyan']}; font-size: 34px; background: transparent; border: none;")
+        ico.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ico.setStyleSheet(f"color: {C['cyan']}; font-size: {_rf(34)}px; background: transparent; border: none;")
         ib.addWidget(ico)
         tb.addWidget(icon_box)
 
         txt = QVBoxLayout();
-        txt.setSpacing(6)
+        txt.setSpacing(_rs(6))
 
         # ── BIG TITLE ── this is what was too small
         title = QLabel("Assembly System Dashboard")
-        title.setFont(QFont("Segoe UI", 64, QFont.Bold))
+        title.setFont(QFont("Segoe UI", _rf(64), QFont.Bold))
         title.setStyleSheet("color: #FFFFFF; background: transparent;")
 
         txt.addWidget(title)
@@ -572,15 +604,15 @@ class MainPage(QWidget):
         tb.addStretch()
 
         self.time_label = QLabel(datetime.now().strftime("%Y-%m-%d  %H:%M:%S"))
-        self.time_label.setFont(QFont("Consolas", 24))
-        self.time_label.setStyleSheet("color: #00AAFF; background: transparent; letter-spacing: 2px;")
+        self.time_label.setFont(QFont("Consolas", _rf(24)))
+        self.time_label.setStyleSheet(f"color: #00AAFF; background: transparent; letter-spacing: {_rs(2)}px;")
         tb.addWidget(self.time_label)
         root.addWidget(topbar)
 
         # ── STATUS BAR ─────────────────────────────────────────────────────
         self.statusbar = QFrame()
         statusbar = self.statusbar
-        statusbar.setFixedHeight(80)
+        statusbar.setFixedHeight(_rs(80))
         statusbar.setStyleSheet("""
             QFrame {
                 background-color: #030810;
@@ -588,14 +620,14 @@ class MainPage(QWidget):
             }
         """)
         sb = QHBoxLayout(statusbar)
-        sb.setContentsMargins(28, 0, 28, 0)
-        sb.setSpacing(14)
+        sb.setContentsMargins(_rs(28), 0, _rs(28), 0)
+        sb.setSpacing(_rs(14))
 
         self.status_dot = QLabel("●")
-        self.status_dot.setStyleSheet(f"color: {C['amber']}; font-size: 24px; background: transparent;")
+        self.status_dot.setStyleSheet(f"color: {C['amber']}; font-size: {_rf(24)}px; background: transparent;")
 
         self.machine_status = QLabel("WAITING FOR MES…")
-        self.machine_status.setFont(QFont("Consolas", 26, QFont.Bold))
+        self.machine_status.setFont(QFont("Consolas", _rf(26), QFont.Bold))
         self.machine_status.setStyleSheet(f"color: {C['amber']}; background: transparent; letter-spacing: 0.5px;")
 
         sb.addWidget(self.status_dot);
@@ -615,8 +647,8 @@ class MainPage(QWidget):
         body_widget = QWidget()
         body_widget.setStyleSheet("background-color: #060C14;")
         body_layout = QVBoxLayout(body_widget)
-        body_layout.setSpacing(22)
-        body_layout.setContentsMargins(24, 22, 24, 24)
+        body_layout.setSpacing(_rs(22))
+        body_layout.setContentsMargins(_rs(24), _rs(22), _rs(24), _rs(24))
         body_scroll.setWidget(body_widget)
         root.addWidget(body_scroll)
 
@@ -627,7 +659,7 @@ class MainPage(QWidget):
             QWidget#waiting_card {
                 background-color: #08111E;
                 border: 1px solid #1A3A5C;
-                border-top: 3px solid #00AAFF;
+                border-top: {_rs(3)}px solid #00AAFF;
                 border-radius: 2px;
             }
         """)
@@ -638,13 +670,13 @@ class MainPage(QWidget):
 
         # ── Header strip (same pattern as recipe/pending cards) ────────
         wc_hdr = QWidget()
-        wc_hdr.setFixedHeight(80)
+        wc_hdr.setFixedHeight(_rs(80))
         wc_hdr.setStyleSheet("background-color: #050D18; border: none; border-bottom: 1px solid #1A3A5C;")
         wch = QHBoxLayout(wc_hdr)
-        wch.setContentsMargins(24, 0, 24, 0)
-        wch.setSpacing(12)
+        wch.setContentsMargins(_rs(24), 0, _rs(24), 0)
+        wch.setSpacing(_rs(12))
         self.sys_dot = QLabel("●")
-        self.sys_dot.setStyleSheet("color: #FFAA00; font-size: 22px; background: transparent;")
+        self.sys_dot.setStyleSheet(f"color: #FFAA00; font-size: {_rf(22)}px; background: transparent;")
         wch.addWidget(self.sys_dot)
         wch.addWidget(self._section_label("SYSTEM STATUS"))
         wch.addStretch()
@@ -654,25 +686,25 @@ class MainPage(QWidget):
         wc_body = QWidget()
         wc_body.setStyleSheet("background: transparent; border: none;")
         wc_body_layout = QVBoxLayout(wc_body)
-        wc_body_layout.setAlignment(Qt.AlignCenter)
-        wc_body_layout.setSpacing(14)
-        wc_body_layout.setContentsMargins(28, 20, 28, 20)
+        wc_body_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        wc_body_layout.setSpacing(_rs(14))
+        wc_body_layout.setContentsMargins(_rs(28), _rs(20), _rs(28), _rs(20))
 
         self.waiting_title = QLabel("Waiting for MES Recipe")
-        self.waiting_title.setFont(QFont("Segoe UI", 36, QFont.Bold))
+        self.waiting_title.setFont(QFont("Segoe UI", _rf(36), QFont.Bold))
         self.waiting_title.setStyleSheet("color: #FFFFFF; background: transparent;")
-        self.waiting_title.setAlignment(Qt.AlignCenter)
+        self.waiting_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         wc_body_layout.addWidget(self.waiting_title)
 
         self.spinner_label = QLabel("■  □  □  □")
-        self.spinner_label.setFont(QFont("Consolas", 26))
-        self.spinner_label.setStyleSheet("color: #00AAFF; background: transparent; letter-spacing: 6px;")
-        self.spinner_label.setAlignment(Qt.AlignCenter)
+        self.spinner_label.setFont(QFont("Consolas", _rf(26)))
+        self.spinner_label.setStyleSheet(f"color: #00AAFF; background: transparent; letter-spacing: {_rs(6)}px;")
+        self.spinner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         wc_body_layout.addWidget(self.spinner_label)
 
         hint = QLabel("Polling MES for the active production recipe…")
-        hint.setStyleSheet("color: #CCDDEE; font-size: 27px; background: transparent;")
-        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet(f"color: #CCDDEE; font-size: {_rf(27)}px; background: transparent;")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         wc_body_layout.addWidget(hint)
         wc.addWidget(wc_body)
         body_layout.addWidget(self.waiting_card)
@@ -687,13 +719,13 @@ class MainPage(QWidget):
         rc.setSpacing(0)
 
         rc_hdr = QWidget();
-        rc_hdr.setFixedHeight(80)
+        rc_hdr.setFixedHeight(_rs(80))
         rc_hdr.setStyleSheet("background-color: #050D18; border: none; border-bottom: 1px solid #1A3A5C;")
         rch = QHBoxLayout(rc_hdr);
-        rch.setContentsMargins(24, 0, 24, 0)
-        rch.setSpacing(12)
+        rch.setContentsMargins(_rs(24), 0, _rs(24), 0)
+        rch.setSpacing(_rs(12))
         self.recipe_dot = QLabel("●")
-        self.recipe_dot.setStyleSheet("color: #00FF88; font-size: 22px; background: transparent;")
+        self.recipe_dot.setStyleSheet(f"color: #00FF88; font-size: {_rf(22)}px; background: transparent;")
         rch.addWidget(self.recipe_dot)
         rch.addWidget(self._section_label("ACTIVE RECIPE"))
         rch.addStretch()
@@ -703,8 +735,8 @@ class MainPage(QWidget):
         rc_body = QWidget();
         rc_body.setStyleSheet("background: transparent;")
         rcb = QVBoxLayout(rc_body);
-        rcb.setContentsMargins(22, 16, 22, 20);
-        rcb.setSpacing(14)
+        rcb.setContentsMargins(_rs(22), _rs(16), _rs(22), _rs(20));
+        rcb.setSpacing(_rs(14))
 
         # Combo kept hidden — used internally for recipe tracking
         self.recipe_combo = QComboBox()
@@ -718,10 +750,10 @@ class MainPage(QWidget):
             color: #FFFFFF;
             background-color: #030810;
             border: 1px solid #1A3A5C;
-            border-left: 4px solid #00AAFF;
+            border-left: {_rs(4)}px solid #00AAFF;
             border-radius: 0px;
-            padding: 14px 20px;
-            font-size: 25px;
+            padding: {_rs(14)}px {_rs(20)}px;
+            font-size: {_rf(25)}px;
         """)
         self.pipeline_info_label.setWordWrap(True)
         rcb.addWidget(self.pipeline_info_label)
@@ -736,13 +768,13 @@ class MainPage(QWidget):
         pc.setSpacing(0)
 
         pc_hdr = QWidget();
-        pc_hdr.setFixedHeight(80)
+        pc_hdr.setFixedHeight(_rs(80))
         pc_hdr.setStyleSheet("background-color: #050D18; border: none; border-bottom: 1px solid #1A3A5C;")
         pch = QHBoxLayout(pc_hdr);
-        pch.setContentsMargins(24, 0, 24, 0)
-        pch.setSpacing(12)
+        pch.setContentsMargins(_rs(24), 0, _rs(24), 0)
+        pch.setSpacing(_rs(12))
         self.result_dot = QLabel("●")
-        self.result_dot.setStyleSheet("color: #88BBDD; font-size: 24px; background: transparent;")
+        self.result_dot.setStyleSheet(f"color: #88BBDD; font-size: {_rf(24)}px; background: transparent;")
         pch.addWidget(self.result_dot)
         pch.addWidget(self._section_label("LATEST RESULT"))
         pch.addStretch()
@@ -760,8 +792,8 @@ class MainPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.pending_widget)
-        scroll.setMinimumHeight(110)
-        scroll.setMaximumHeight(320)
+        scroll.setMinimumHeight(_rs(110))
+        scroll.setMaximumHeight(_rs(320))
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         pc.addWidget(scroll)
@@ -777,21 +809,23 @@ class MainPage(QWidget):
         body_layout.addSpacing(8)
 
         grid = QGridLayout();
-        grid.setSpacing(16)
+        grid.setSpacing(_rs(16))
         grid.setColumnStretch(0, 1);
         grid.setColumnStretch(1, 2)
 
         tech_btn = QPushButton("👨‍🔧  TECHNICIAN LOGIN")
-        tech_btn.setFixedHeight(150)
-        tech_btn.setFont(QFont("Segoe UI", 26, QFont.DemiBold))
+        tech_btn.setMinimumHeight(_rs(110))
+        tech_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tech_btn.setFont(QFont("Segoe UI", _rf(26), QFont.DemiBold))
         tech_btn.setToolTip("Open technician panel")
         tech_btn.setStyleSheet(self._btn_secondary())
         tech_btn.clicked.connect(self.open_technician)
         grid.addWidget(tech_btn, 0, 0)
 
         self.run_button = QPushButton("▶  START PIPELINE")
-        self.run_button.setFixedHeight(150)
-        self.run_button.setFont(QFont("Segoe UI", 32, QFont.Bold))
+        self.run_button.setMinimumHeight(_rs(110))
+        self.run_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.run_button.setFont(QFont("Segoe UI", _rf(32), QFont.Bold))
         self.run_button.setToolTip("Execute the selected recipe")
         self.run_button.setEnabled(False)
         self.run_button.setStyleSheet(self._btn_primary())
@@ -822,7 +856,7 @@ class MainPage(QWidget):
         self._spinner_frame = (self._spinner_frame + 1) % len(self._SPIN)
         self._pulse_on = not self._pulse_on
         col = C["amber"] if self._pulse_on else C["amber_bg"]
-        self.status_dot.setStyleSheet(f"color: {col}; font-size: 24px; background: transparent;")
+        self.status_dot.setStyleSheet(f"color: {col}; font-size: {_rf(24)}px; background: transparent;")
 
     def start_spinner(self):
         self._spinner_frame = 0;
@@ -838,13 +872,13 @@ class MainPage(QWidget):
             self.pending_count.setText(f"{n} JOB{'S' if n != 1 else ''}")
             self.pending_count.setStyleSheet(
                 f"color: {C['red']}; background-color: {C['red_bg']}; border: 1px solid {C['red_bd']}; "
-                f"border-radius: 14px; padding: 9px 24px; font-size: 24px; font-weight: 700;"
+                f"border-radius: {_rs(14)}px; padding: {_rs(9)}px {_rs(24)}px; font-size: 24px; font-weight: 700;"
             )
         else:
             self.pending_count.setText("0 JOBS")
             self.pending_count.setStyleSheet(
                 f"color: #88BBDD; background-color: #0C1A2C; border: 1px solid #1A3050; "
-                f"border-radius: 12px; padding: 5px 16px; font-size: 24px; font-weight: 700;"
+                f"border-radius: {_rs(12)}px; padding: {_rs(5)}px {_rs(16)}px; font-size: 24px; font-weight: 700;"
             )
 
     def update_pending_display(self):
@@ -857,13 +891,13 @@ class MainPage(QWidget):
             empty.setStyleSheet("background: transparent; border: none;")
             el = QVBoxLayout(empty);
             el.setContentsMargins(0, 30, 0, 30);
-            el.setAlignment(Qt.AlignCenter)
+            el.setAlignment(Qt.AlignmentFlag.AlignCenter)
             ico = QLabel("✓")
             ico.setStyleSheet("color: #4A8A4A; font-size: 48px; background: transparent;")
-            ico.setAlignment(Qt.AlignCenter)
+            ico.setAlignment(Qt.AlignmentFlag.AlignCenter)
             msg = QLabel("Queue is clear — no pending jobs")
             msg.setStyleSheet("color: #FFFFFF; font-size: 26px; background: transparent;")
-            msg.setAlignment(Qt.AlignCenter)
+            msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
             el.addWidget(ico);
             el.addWidget(msg)
             self.pending_layout.insertWidget(0, empty)
@@ -913,11 +947,11 @@ class MainPage(QWidget):
         info = QVBoxLayout();
         info.setSpacing(5)
         n = QLabel(display)
-        n.setStyleSheet("color: #FFFFFF; font-size: 27px; font-weight: 700; background: transparent;")
+        n.setStyleSheet(f"color: #FFFFFF; font-size: {_rf(27)}px; font-weight: 700; background: transparent;")
         parts = [f"{completed}/{total} steps"]
         if skipped: parts.append(f"{skipped} skipped")
         s = QLabel("  ·  ".join(parts))
-        s.setStyleSheet(f"color: #AACCEE; font-size: 22px; background: transparent;")
+        s.setStyleSheet(f"color: #AACCEE; font-size: {_rf(22)}px; background: transparent;")
         info.addWidget(n);
         info.addWidget(s)
         row.addLayout(info);
@@ -969,9 +1003,9 @@ class MainPage(QWidget):
         if config_manager.current_recipe != recipe_name:
             config_manager.set_current_recipe(recipe_name)
 
-        if old_recipe != recipe_name and recipe_name:
-            print(f"🔄 Recipe changed from '{old_recipe}' to '{recipe_name}' - sending to port 5001")
-            PipelineRunner.send_recipe_to_screw_server(recipe_name)
+        # if old_recipe != recipe_name and recipe_name:
+        #     print(f"🔄 Recipe changed from '{old_recipe}' to '{recipe_name}' - sending to port 5001")
+        #     PipelineRunner.send_recipe_to_screw_server(recipe_name)
 
         self.waiting_card.setVisible(False);
         self.recipe_card.setVisible(True)
@@ -986,11 +1020,11 @@ class MainPage(QWidget):
         short = job_title[:32] if len(job_title) > 32 else job_title
         self.machine_status.setText(f"READY  ·  {recipe_name}  ·  {short}")
         self.machine_status.setStyleSheet(f"color: {C['green']}; background: transparent; letter-spacing: 0.5px;")
-        self.status_dot.setStyleSheet(f"color: {C['green']}; font-size: 24px; background: transparent;")
+        self.status_dot.setStyleSheet(f"color: {C['green']}; font-size: {_rf(24)}px; background: transparent;")
         self.mes_status_label.setText(f"MES  ·  {job_title[:28]}")
         self.mes_status_label.setStyleSheet(
             f"color: {C['green']}; background-color: {C['green_bg']}; border: 1px solid {C['green_bd']}; "
-            f"border-radius: 14px; padding: 9px 24px; font-size: 24px; font-weight: 700;"
+            f"border-radius: {_rs(14)}px; padding: {_rs(9)}px {_rs(24)}px; font-size: 24px; font-weight: 700;"
         )
 
         job_id = job_details.get('title') or job_details.get('workOrder') or 'Unknown'
@@ -999,9 +1033,12 @@ class MainPage(QWidget):
             self.qr_check_passed = False;
             self.qr_result_ok = False
 
-        self.set_pipeline_idle_ui()
+        if not self.pipeline_running and not self.pipeline_precheck_running:
+            self.set_pipeline_idle_ui()
+        else:
+            self.set_pipeline_running_ui()
         if hasattr(self, 'sys_dot'): self.sys_dot.setStyleSheet(
-            "color: #00DD66; font-size: 24px; background: transparent;")
+            "color: #00DD66; font-size: {_rf(24)}px; background: transparent;")
         self.update_pipeline_info();
         self.load_pending_jobs()
         self.machine_status.repaint();
@@ -1034,14 +1071,14 @@ class MainPage(QWidget):
         if hasattr(self, 'run_button'): self.run_button.setEnabled(False)
         self.machine_status.setText("WAITING FOR MES…")
         self.machine_status.setStyleSheet("color: #FFCC44; background: transparent;")
-        self.status_dot.setStyleSheet("color: #FFAA00; font-size: 24px; background: transparent;")
+        self.status_dot.setStyleSheet(f"color: #FFAA00; font-size: {_rf(24)}px; background: transparent;")
         if hasattr(self, "statusbar"): self.statusbar.setStyleSheet(
             "QFrame { background-color: #030810; border-bottom: 1px solid #FFAA0040; }")
         self.statusbar.setStyleSheet("QFrame { background-color: #0E1800; border-bottom: 2px solid #2A3A00; }")
         self.mes_status_label.setText("MES  ·  Awaiting Recipe")
         self.mes_status_label.setStyleSheet(
             f"color: {C['amber']}; background-color: {C['amber_bg']}; border: 1px solid {C['amber_bd']}; "
-            f"border-radius: 14px; padding: 9px 24px; font-size: 24px; font-weight: 700;"
+            f"border-radius: {_rs(14)}px; padding: {_rs(9)}px {_rs(24)}px; font-size: 24px; font-weight: 700;"
         )
         QApplication.processEvents()
 
@@ -1174,6 +1211,13 @@ class MainPage(QWidget):
                 self.orbbec_thread.set_trigger_state("idle")
             return
 
+        # ✅ Send current recipe to 127.0.0.1:5001 only when start trigger is accepted
+        try:
+            ok = PipelineRunner.send_recipe_to_screw_server(self.current_recipe)
+            print(f"[MainPage] 📤 Sent recipe on start trigger: {self.current_recipe} -> {ok}")
+        except Exception as e:
+            print(f"[MainPage] ❌ Failed to send recipe on start trigger: {e}")
+
         # Set state to waiting for QR confirmation
         self.waiting_for_qr_confirm = True
 
@@ -1225,7 +1269,7 @@ class MainPage(QWidget):
             self.orbbec_thread.set_trigger_state("waiting_qr")
         self.qr_dialog.status_label.setText("✓ QR SCANNED!")
         self.qr_dialog.status_label.setStyleSheet(
-            "color: #00FF88; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
+            "color: #00FF88; font-size: {_rf(26)}px; font-weight: 700; font-family: Consolas; background: transparent;")
         self.qr_dialog.result_box.append(clean)
 
         self.qr_dialog.confirm_btn.setEnabled(True)
@@ -1241,7 +1285,7 @@ class MainPage(QWidget):
 
         self.qr_dialog.status_label.setText("✓ QR verified! Place hand in trigger box to start")
         self.qr_dialog.status_label.setStyleSheet(
-            "color: #00AAFF; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
+            "color: #00AAFF; font-size: {_rf(26)}px; font-weight: 700; font-family: Consolas; background: transparent;")
         self.qr_dialog.confirm_btn.setEnabled(False)
         self.qr_dialog.confirm_btn.setText("WAITING FOR HAND...")
 
@@ -1362,7 +1406,7 @@ class MainPage(QWidget):
 
         # ===== Auto-close popup (no button) =====
         popup = QDialog(self)
-        popup.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
+        popup.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.Tool)
         popup.setModal(False)
         popup.setFixedSize(420, 140)
         popup.setStyleSheet("""
@@ -1383,7 +1427,7 @@ class MainPage(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
 
         label = QLabel("PIPELINE STOPPED\nMissing objects detected")
-        label.setAlignment(Qt.AlignCenter)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(label)
 
         popup.show()
@@ -1403,7 +1447,7 @@ class MainPage(QWidget):
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Missing Objects Detected")
-        dialog.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        dialog.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         dialog.setModal(True)
         dialog.setFixedSize(980, 760)
         dialog.setStyleSheet("""
@@ -1433,7 +1477,7 @@ class MainPage(QWidget):
         title = QLabel("MISSING OBJECTS DETECTED")
         title.setStyleSheet(
             "color: #FFFFFF; font-size: 28px; font-weight: 900; "
-            "letter-spacing: 2px; font-family: Consolas;"
+            "letter-spacing: {_rs(2)}px; font-family: Consolas;"
         )
 
         hdr_row.addWidget(icon)
@@ -1610,13 +1654,13 @@ class MainPage(QWidget):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(18)
-        right_layout.setAlignment(Qt.AlignCenter)
+        right_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.missing_progress_ring = HoldProgressRing()
-        right_layout.addWidget(self.missing_progress_ring, alignment=Qt.AlignCenter)
+        right_layout.addWidget(self.missing_progress_ring, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.timer_label = QLabel("⏱ WAITING FOR HAND...")
-        self.timer_label.setAlignment(Qt.AlignCenter)
+        self.timer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.timer_label.setStyleSheet("""
             QLabel {
                 color: #00FF88;
@@ -1632,7 +1676,7 @@ class MainPage(QWidget):
         right_layout.addWidget(self.timer_label)
 
         self.timer_sub_label = QLabel("Place hand in trigger box to begin")
-        self.timer_sub_label.setAlignment(Qt.AlignCenter)
+        self.timer_sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.timer_sub_label.setStyleSheet("""
             QLabel {
                 color: #AACCEE;
@@ -1812,7 +1856,7 @@ class MainPage(QWidget):
         self.qr_check_passed = True
         self.qr_dialog.status_label.setText("✓  Barcode received — ready to confirm")
         self.qr_dialog.status_label.setStyleSheet(
-            "color: #00FF88; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
+            "color: #00FF88; font-size: {_rf(26)}px; font-weight: 700; font-family: Consolas; background: transparent;")
         self.qr_dialog.confirm_btn.setEnabled(True);
         self.qr_dialog.result_box.append(clean)
 
@@ -1820,7 +1864,7 @@ class MainPage(QWidget):
         if not self.qr_dialog: return
         self.qr_dialog.status_label.setText("✕  Connection error")
         self.qr_dialog.status_label.setStyleSheet(
-            "color: #FF3344; font-size: 26px; font-weight: 700; font-family: Consolas; background: transparent;")
+            "color: #FF3344; font-size: {_rf(26)}px; font-weight: 700; font-family: Consolas; background: transparent;")
         self.qr_dialog.result_box.append(f"[ERROR]  {text}")
 
     def on_qr_finished(self):
@@ -2370,7 +2414,7 @@ class MainPage(QWidget):
             job_info = f"\n\nJob: {self.current_job_details.get('title', 'Unknown')}"
         if QMessageBox.question(self, "Start New Pipeline",
                                 f"Start new pipeline for <b>{self.current_recipe}</b>?{job_info}",
-                                QMessageBox.Yes | QMessageBox.No) == QMessageBox.No: return
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.No: return
         self.pipeline_running = True;
         self.machine_status.setText("RUNNING…")
         try:
@@ -2392,7 +2436,7 @@ class MainPage(QWidget):
         layout = QVBoxLayout(dialog);
         layout.setContentsMargins(20, 20, 20, 20)
         lbl = QLabel("Select a job to continue:")
-        lbl.setStyleSheet(f"font-size: 26px; font-weight: 700; color: #FFFFFF;");
+        lbl.setStyleSheet(f"font-size: {_rf(26)}px; font-weight: 700; color: #FFFFFF;");
         layout.addWidget(lbl)
         job_list = QListWidget()
         job_list.setStyleSheet(f"""
@@ -2444,7 +2488,7 @@ class MainPage(QWidget):
         dlg.setIcon(QMessageBox.Question)
         dlg.setText(
             f"Job <b>{jid}</b>:<br><br>• Completed: {comp}/{tot}<br>• Skipped: {skip}<br><br>What would you like to do?")
-        dlg.setStandardButtons(QMessageBox.NoButton)
+        dlg.setStandardButtons(QMessageBox.StandardButton.NoButton)
         c = dlg.addButton("Continue Job", QMessageBox.ActionRole);
         c.setStyleSheet(self._btn_primary())
         n = dlg.addButton("Start Fresh", QMessageBox.ActionRole);
@@ -2458,7 +2502,7 @@ class MainPage(QWidget):
 
     def archive_and_start_new(self, old_job):
         if QMessageBox.question(self, "Archive Job", "Archive old job and start fresh?",
-                                QMessageBox.Yes | QMessageBox.No) == QMessageBox.No: return
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.No: return
         old_job['status'] = 'archived';
         old_job['archived_time'] = datetime.now().isoformat()
         self.save_archived_job(old_job)
@@ -2491,7 +2535,7 @@ class MainPage(QWidget):
         dlg.setWindowTitle("Pending Jobs");
         dlg.setIcon(QMessageBox.Question)
         dlg.setText(f"You have {len(self.pending_jobs)} incomplete job(s).")
-        dlg.setStandardButtons(QMessageBox.NoButton)
+        dlg.setStandardButtons(QMessageBox.StandardButton.NoButton)
         c = dlg.addButton("Continue Pending", QMessageBox.ActionRole);
         c.setStyleSheet(self._btn_primary())
         n = dlg.addButton("Start New", QMessageBox.ActionRole);
@@ -2506,7 +2550,7 @@ class MainPage(QWidget):
     def force_new_job(self):
         if self.waiting_for_mes: return
         if QMessageBox.question(self, "Start New Job", "Keep pending jobs and start a new one?",
-                                QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             self.machine_status.setText("RUNNING…");
             self.pipeline_running = True
             try:
@@ -2567,7 +2611,7 @@ class MainPage(QWidget):
                     color: #00FF88;
                     border: 1px solid #0A5030;
                     border-bottom: 5px solid #051008;
-                    border-left: 3px solid #00FF88;
+                    border-left: {_rs(3)}px solid #00FF88;
                     border-radius: 2px;
                     font-size: 30px;
                     font-weight: 800;
@@ -2578,7 +2622,7 @@ class MainPage(QWidget):
                     color: #00FF88;
                     border: 1px solid #0A5030;
                     border-bottom: 5px solid #051008;
-                    border-left: 3px solid #00FF88;
+                    border-left: {_rs(3)}px solid #00FF88;
                 }
             """)
 

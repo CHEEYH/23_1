@@ -1829,13 +1829,14 @@ class LiveStreamWorker(threading.Thread):
 
 
 class BitSelectorWorker(threading.Thread):
-    def __init__(self, reconnect_delay=1.0, poll_delay=0.1):
+    def __init__(self, reconnect_delay=1.0, poll_delay=0.1, read_timeout=0.02):
         super().__init__(daemon=True)
         self.running = True
         self.client = None
         self.last_bits = None
-        self.reconnect_delay = reconnect_delay
-        self.poll_delay = poll_delay
+        self.reconnect_delay = float(reconnect_delay)
+        self.poll_delay = max(0.02, float(poll_delay))
+        self.read_timeout = max(0.01, float(read_timeout))
 
     def stop(self):
         self.running = False
@@ -1848,6 +1849,61 @@ class BitSelectorWorker(threading.Thread):
                 pass
         set_selector_connection_status(False, "worker stopped")
 
+    def _apply_fast_socket_timeout(self):
+        """
+        Make selector recv timeout short enough so polling cadence is not stretched
+        by a long blocking recv().
+        """
+        try:
+            client = self.client
+            if client and client.sock:
+                client.sock.settimeout(self.read_timeout)
+        except Exception as e:
+            log_error(f"[SELECTOR] failed to set fast socket timeout: {e}")
+
+    def _send_periodic_read(self):
+        client = self.client
+        if client is None or client.sock is None:
+            raise ConnectionError("Selector client not connected")
+
+        with selector_lock:
+            client.send_frame(cmd_read_selector_status())
+
+    def _drain_selector_frames(self, drain_window_sec=0.06):
+        """
+        Read as many selector frames as available for a short time window
+        without blocking the whole polling loop too long.
+        """
+        deadline = time.time() + max(0.01, float(drain_window_sec))
+
+        while self.running and time.time() < deadline:
+            try:
+                frames = self.client.recv_frames()
+                if not frames:
+                    continue
+
+                for frame in frames:
+                    if not verify_frame(frame):
+                        continue
+
+                    if (frame[3], frame[4]) in ((0x03, 0x12), (0x02, 0x10)):
+                        status = parse_selector_status(frame)
+                        applied = process_selector_status_confirmed(status)
+
+                        if applied:
+                            current_bits = tuple(status.bits)
+                            if current_bits != self.last_bits:
+                                if DEBUG_SELECTOR:
+                                    log_debug(f"[SELECTOR] bits confirmed={current_bits}")
+                                self.last_bits = current_bits
+
+            except socket.timeout:
+                break
+            except ConnectionError:
+                raise
+            except Exception as e:
+                raise RuntimeError(f"selector drain error: {e}") from e
+
     def run(self):
         global selector_last_stable_bits, selector_pending_bits, selector_pending_same_count
 
@@ -1856,6 +1912,8 @@ class BitSelectorWorker(threading.Thread):
                 set_selector_connection_status(False, f"connecting to {BIT_SELECTOR_HOST}:{BIT_SELECTOR_PORT}")
                 self.client = BitSelectorTCPClient(BIT_SELECTOR_HOST, BIT_SELECTOR_PORT, BIT_SELECTOR_TIMEOUT)
                 self.client.connect()
+                self._apply_fast_socket_timeout()
+
                 log_debug("[SELECTOR] Worker connected")
 
                 with selector_lock:
@@ -1864,50 +1922,50 @@ class BitSelectorWorker(threading.Thread):
                     selector_pending_same_count = 0
                     self.last_bits = None
 
+                log_debug(f"[SELECTOR] Poll read interval = {self.poll_delay:.3f}s")
+                log_debug(f"[SELECTOR] Read timeout = {self.read_timeout:.3f}s")
+
                 # send read status once after connect / reconnect
-                log_debug(f"[SELECTOR] Poll read interval = {self.poll_delay:.1f}s")
                 with selector_lock:
                     self.client.send_frame(READ_SELECTOR_STATUS_ON_CONNECT_FRAME)
                 log_debug("[SELECTOR] Sent read-status-on-connect frame")
 
+                # quickly read initial reply if available
+                try:
+                    self._drain_selector_frames(drain_window_sec=0.15)
+                except socket.timeout:
+                    pass
+
+                next_poll_time = time.time()
+
                 while self.running:
-                    try:
-                        with selector_lock:
-                            self.client.send_frame(cmd_read_selector_status())
+                    now = time.time()
 
-                        for frame in self.client.recv_frames():
-                            if not verify_frame(frame):
-                                continue
+                    if now >= next_poll_time:
+                        self._send_periodic_read()
+                        next_poll_time += self.poll_delay
 
-                            if (frame[3], frame[4]) in ((0x03, 0x12), (0x02, 0x10)):
-                                status = parse_selector_status(frame)
-                                applied = process_selector_status_confirmed(status)
+                        # prevent drift after a long hiccup
+                        if now - next_poll_time > self.poll_delay:
+                            next_poll_time = now + self.poll_delay
 
-                                if applied:
-                                    current_bits = tuple(status.bits)
-                                    if current_bits != self.last_bits:
-                                        if DEBUG_SELECTOR:
-                                            log_debug(f"[SELECTOR] bits confirmed={current_bits}")
-                                        self.last_bits = current_bits
+                    self._drain_selector_frames(
+                        drain_window_sec=min(0.08, max(0.02, self.poll_delay * 0.8))
+                    )
 
-                        time.sleep(self.poll_delay)
+                    sleep_for = max(0.005, min(0.02, next_poll_time - time.time()))
+                    time.sleep(sleep_for)
 
-                    except socket.timeout:
-                        continue
-                    except ConnectionError as e:
-                        if self.running:
-                            log_debug(f"[SELECTOR] Connection lost: {e}")
-                            set_selector_connection_status(False, f"lost: {e}")
-                        break
-                    except Exception as e:
-                        if self.running:
-                            log_debug(f"[SELECTOR] Poll error: {e}")
-                            set_selector_connection_status(False, f"poll error: {e}")
-                        break
+            except ConnectionError as e:
+                if self.running:
+                    log_debug(f"[SELECTOR] Connection lost: {e}")
+                    set_selector_connection_status(False, f"lost: {e}")
+
             except Exception as e:
                 if self.running:
                     log_debug(f"[SELECTOR] Reconnect reason: {e}")
                     set_selector_connection_status(False, f"reconnect: {e}")
+
             finally:
                 client = self.client
                 self.client = None
@@ -1916,6 +1974,7 @@ class BitSelectorWorker(threading.Thread):
                         client.close()
                     except Exception:
                         pass
+
             if self.running:
                 log_debug(f"[SELECTOR] Reconnecting in {self.reconnect_delay:.1f}s")
                 time.sleep(self.reconnect_delay)
@@ -1930,7 +1989,12 @@ def start_live_worker():
 def start_selector_worker():
     global selector_worker
     if selector_worker is None or not selector_worker.is_alive():
-        selector_worker = BitSelectorWorker(); selector_worker.start()
+        selector_worker = BitSelectorWorker(
+            reconnect_delay=1.0,
+            poll_delay=0.1,
+            read_timeout=0.02,
+        )
+        selector_worker.start()
         log_debug("[SELECTOR] Worker started")
 
 
